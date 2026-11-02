@@ -22,7 +22,9 @@ import type { CreditCardPurchase } from "@/lib/types"
 import { ArrowLeft, Loader2 } from "lucide-react"
 import Link from "next/link"
 import { invalidateCache, invalidateCacheByPrefix } from "@/lib/swr-cache"
-import { buildCreditCardInstallmentTransactions } from "@/lib/credit-card-installments"
+import { buildCreditCardInstallmentTransactions, splitInstallmentAmounts } from "@/lib/credit-card-installments"
+import { planCreditCardPurchaseInstallmentSync } from "@/lib/credit-card-purchase-sync"
+import { toLocalDateOnly } from "@/lib/date-only"
 
 type CreditCardPurchaseFormProps = {
   initialData?: CreditCardPurchase
@@ -47,7 +49,7 @@ export function CreditCardPurchaseForm({ initialData }: CreditCardPurchaseFormPr
     description: initialData?.description || "",
     total_amount: initialData?.total_amount?.toString() || "",
     total_installments: initialData?.total_installments?.toString() || "1",
-    start_date: initialData?.start_date || new Date().toISOString().split("T")[0],
+    start_date: initialData?.start_date || toLocalDateOnly(),
     category_id: initialData?.category_id || "__none",
   })
   const [isSubmitting, setIsSubmitting] = useState(false)
@@ -58,11 +60,12 @@ export function CreditCardPurchaseForm({ initialData }: CreditCardPurchaseFormPr
   const firstInstallmentDueDate = selectedCard && form.start_date
     ? getCreditCardStatementDueDate(form.start_date, selectedCard)
     : form.start_date
-  const installmentAmount = useMemo(() => {
+  const installmentAmounts = useMemo(() => {
     const total = Number(form.total_amount) || 0
     const installments = Math.max(Number(form.total_installments) || 1, 1)
-    return total / installments
+    return splitInstallmentAmounts(total, installments)
   }, [form.total_amount, form.total_installments])
+  const installmentAmount = installmentAmounts[0] || 0
 
   const savePurchase = async () => {
     if (!form.credit_card_id || !form.description.trim() || Number(form.total_amount) <= 0) {
@@ -128,13 +131,6 @@ export function CreditCardPurchaseForm({ initialData }: CreditCardPurchaseFormPr
 
       if (existingTransactionsError) throw existingTransactionsError
 
-      const existingByInstallment = new Map<number, ExistingInstallmentTransaction>()
-      for (const transaction of (existingTransactions || []) as ExistingInstallmentTransaction[]) {
-        if (transaction.installment_number) {
-          existingByInstallment.set(Number(transaction.installment_number), transaction)
-        }
-      }
-
       const synchronizedInstallments = buildCreditCardInstallmentTransactions({
         purchase: {
           ...purchasePayload,
@@ -148,38 +144,35 @@ export function CreditCardPurchaseForm({ initialData }: CreditCardPurchaseFormPr
         actorUserId: user.id,
       })
 
-      for (const synchronizedInstallment of synchronizedInstallments) {
-        const installmentNumber = synchronizedInstallment.installment_number
-        const existing = existingByInstallment.get(installmentNumber)
-        const transactionPayload = {
-          ...synchronizedInstallment,
-          status: existing?.status || synchronizedInstallment.status,
-          approved_at: existing?.approved_at || synchronizedInstallment.approved_at,
-          approved_by: existing?.approved_by || synchronizedInstallment.approved_by,
-          created_by: existing ? existing.created_by : synchronizedInstallment.created_by,
-          archived_at: null,
-        }
+      const syncPlan = planCreditCardPurchaseInstallmentSync({
+        existingTransactions: (existingTransactions || []) as ExistingInstallmentTransaction[],
+        synchronizedInstallments,
+        totalInstallments,
+      })
 
-        const transactionResult = existing
-          ? await supabase.from("transactions").update(transactionPayload).eq("id", existing.id)
-          : await supabase.from("transactions").upsert(transactionPayload, {
-              onConflict: "credit_card_purchase_id,installment_number",
-              ignoreDuplicates: true,
-            })
-
-        if (transactionResult.error) throw transactionResult.error
+      for (const update of syncPlan.updates) {
+        const { error: updateError } = await supabase
+          .from("transactions")
+          .update(update.payload)
+          .eq("id", update.id)
+        if (updateError) throw updateError
       }
 
-      const extraTransactionIds = ((existingTransactions || []) as ExistingInstallmentTransaction[])
-        .filter((transaction) => Number(transaction.installment_number || 0) > totalInstallments)
-        .map((transaction) => transaction.id)
+      if (syncPlan.inserts.length > 0) {
+        const { error: insertError } = await supabase.from("transactions").upsert(syncPlan.inserts, {
+          onConflict: "credit_card_purchase_id,installment_number",
+          ignoreDuplicates: true,
+        })
+        if (insertError) throw insertError
+      }
 
-      if (extraTransactionIds.length > 0) {
-        const { error: deleteExtraError } = await supabase
+      if (syncPlan.archiveIds.length > 0) {
+        const { error: archiveExtraError } = await supabase
           .from("transactions")
-          .delete()
-          .in("id", extraTransactionIds)
-        if (deleteExtraError) throw deleteExtraError
+          .update({ archived_at: new Date().toISOString() })
+          .in("id", syncPlan.archiveIds)
+          .is("archived_at", null)
+        if (archiveExtraError) throw archiveExtraError
       }
 
       invalidateCache("credit-card-purchases")
@@ -271,9 +264,14 @@ export function CreditCardPurchaseForm({ initialData }: CreditCardPurchaseFormPr
         <div className="rounded-md border p-3">
           <p className="text-sm text-muted-foreground">Valor de cuota</p>
           <p className="text-xl font-semibold font-mono">{formatCurrency(installmentAmount, selectedCard?.currency)}</p>
+          {installmentAmounts.length > 1 && installmentAmounts[0] !== installmentAmounts[installmentAmounts.length - 1] && (
+            <p className="mt-1 text-xs text-muted-foreground">
+              Las cuotas se ajustan en centavos para que sumen exactamente el total.
+            </p>
+          )}
           {selectedCard && form.start_date && (
             <p className="mt-2 text-sm text-muted-foreground">
-              La primera cuota impactará el {formatDateOnlyForDisplay(firstInstallmentDueDate)} según el cierre y vencimiento de la tarjeta.
+              La primera cuota impactará el {formatDateOnlyForDisplay(firstInstallmentDueDate)} según el cierre y vencimiento de la tarjeta. El efectivo solo se reduce al confirmar el pago del resumen.
             </p>
           )}
         </div>
