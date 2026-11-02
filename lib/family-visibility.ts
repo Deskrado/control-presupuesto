@@ -49,6 +49,9 @@ export function isCategoryVisibleForMember(
 ) {
   if (!category?.id) return true
 
+  // Align with RLS: masked categories are not readable by the restricted member.
+  if (getMaskedCategoryAmount(category.id, permissions) !== null) return false
+
   const visibleCategoryIds = permissions?.visible_category_ids
   if (!Array.isArray(visibleCategoryIds)) return true
   if (visibleCategoryIds.includes(category.id)) return true
@@ -69,25 +72,20 @@ export function applyTransactionVisibility(
 
   const visibleCategoryIds = permissions?.visible_category_ids
   const shouldFilterCategories = Array.isArray(visibleCategoryIds)
+  const hasMaskedCategories = Boolean(
+    permissions?.masked_category_amounts
+    && Object.keys(permissions.masked_category_amounts).length > 0,
+  )
 
   return transactions
     .filter((transaction) => {
-      if (!shouldFilterCategories) return true
       if (!transaction.category_id) return true
-      return isCategoryVisibleForMember(transaction.category || { id: transaction.category_id, created_at: "" }, permissions)
-    })
-    .map((transaction) => {
-      const maskedAmount = getMaskedCategoryAmount(transaction.category_id, permissions)
-      if (maskedAmount === null) return transaction
-
-      return {
-        ...transaction,
-        amount: maskedAmount,
-        budgeted_amount: maskedAmount,
-        metadata: {
-          ...(transaction.metadata || {}),
-          visibility_masked: true,
-        },
-      }
+      if (getMaskedCategoryAmount(transaction.category_id, permissions) !== null) return false
+      if (!shouldFilterCategories && !hasMaskedCategories) return true
+      if (!shouldFilterCategories) return true
+      return isCategoryVisibleForMember(
+        transaction.category || { id: transaction.category_id, created_at: "" },
+        permissions,
+      )
     })
 }

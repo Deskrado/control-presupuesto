@@ -3,6 +3,7 @@ import { createHash } from "node:crypto"
 import { createClient } from "@/lib/supabase/server"
 import { createAdminClient } from "@/lib/supabase/admin"
 import { encryptJson } from "@/lib/integrations/crypto"
+import { toPersistedIolSecret } from "@/lib/integrations/iol-secret"
 import { loginToIol } from "@/lib/integrations/providers/iol"
 
 function getIolAccountHash(username: string, environment: string) {
@@ -43,13 +44,8 @@ export async function POST(request: NextRequest) {
       : provider.base_url
 
     const token = await loginToIol({ username, password, baseUrl })
-    const encrypted = encryptJson({
-      ...token,
-      obtained_at: new Date().toISOString(),
-      base_url: baseUrl,
-      username,
-      password,
-    })
+    // Password is used only for this interactive login; persist tokens (+ username) only.
+    const encrypted = encryptJson(toPersistedIolSecret({ token, baseUrl, username }))
     const expiresAt = new Date(Date.now() + Number(token.expires_in || 900) * 1000).toISOString()
 
     if (reconnectConnectionId) {

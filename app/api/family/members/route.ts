@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server"
+import { findAuthUserByEmail } from "@/lib/auth/find-user-by-email"
 import { createClient } from "@/lib/supabase/server"
 import { createAdminClient } from "@/lib/supabase/admin"
 import { ALL_FAMILY_MODULE_IDS } from "@/lib/family-visibility"
@@ -88,11 +89,9 @@ export async function POST(request: NextRequest) {
       clonedPermissions = sourcePermissions || null
     }
 
+    // Service role only for Auth user lookup/create + profile bootstrap of the invitee.
     const admin = createAdminClient()
-    const { data: usersPage, error: usersError } = await admin.auth.admin.listUsers({ page: 1, perPage: 1000 })
-    if (usersError) throw usersError
-
-    let targetUser = usersPage.users.find((item) => item.email?.toLowerCase() === email)
+    let targetUser = await findAuthUserByEmail(email)
     if (!targetUser) {
       if (!password) {
         return NextResponse.json({ error: "Ingresá una contraseña inicial para registrar el usuario" }, { status: 400 })
