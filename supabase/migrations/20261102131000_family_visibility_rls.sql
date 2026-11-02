@@ -2,6 +2,10 @@
 -- Owners and members without a permissions row remain unrestricted.
 -- Masked categories are treated as non-readable for the restricted member
 -- (stricter than UI placeholders; prevents amount exfiltration via direct SELECT).
+--
+-- Idempotent: safe to re-run after a failed/partial apply (DROP POLICY IF EXISTS
+-- before every CREATE). Do not reference categories.category_id — that column
+-- does not exist; categories use id (+ created_at) in a dedicated SELECT policy.
 
 create or replace function public.my_family_permissions(target_family_id uuid)
 returns public.family_member_permissions
@@ -178,7 +182,8 @@ grant execute on function public.can_access_family_module(uuid, text) to authent
 grant execute on function public.can_view_family_category(uuid, uuid, timestamptz) to authenticated;
 grant execute on function public.can_read_family_row(uuid, text, uuid, timestamptz) to authenticated;
 
--- Replace broad ALL policies with module-aware SELECT + existing write checks.
+-- Replace broad ALL policies with module-aware SELECT + write checks.
+-- category_column: null = module-only; 'category_id' = row category FK; 'id' = categories table itself.
 do $$
 declare
   rec record;
@@ -186,21 +191,40 @@ begin
   for rec in
     select *
     from (values
-      ('groups', 'categories', false),
-      ('categories', 'categories', true),
-      ('credit_cards', 'credit_cards', false),
-      ('credit_card_purchases', 'credit_cards', false),
-      ('transactions', 'transactions', true),
-      ('budgets', 'transactions', true),
-      ('investments', 'investments', false),
-      ('savings_goals', 'savings', false),
-      ('savings_movements', 'savings', false),
-      ('monthly_savings', 'savings', false)
-    ) as t(table_name, module_id, has_category)
+      ('groups', 'categories', null::text),
+      ('categories', 'categories', 'id'),
+      ('credit_cards', 'credit_cards', null::text),
+      ('credit_card_purchases', 'credit_cards', null::text),
+      ('transactions', 'transactions', 'category_id'),
+      ('budgets', 'transactions', 'category_id'),
+      ('investments', 'investments', null::text),
+      ('savings_goals', 'savings', null::text),
+      ('savings_movements', 'savings', null::text),
+      ('monthly_savings', 'savings', null::text)
+    ) as t(table_name, module_id, category_column)
   loop
     execute format('drop policy if exists %I on public.%I', rec.table_name || ' owner access', rec.table_name);
+    execute format('drop policy if exists %I on public.%I', rec.table_name || ' owner select', rec.table_name);
+    execute format('drop policy if exists %I on public.%I', rec.table_name || ' owner insert', rec.table_name);
+    execute format('drop policy if exists %I on public.%I', rec.table_name || ' owner update', rec.table_name);
+    execute format('drop policy if exists %I on public.%I', rec.table_name || ' owner delete', rec.table_name);
 
-    if rec.has_category then
+    if rec.category_column = 'id' then
+      -- categories: visibility is on the row's own id (+ created_at for newly created cats).
+      execute format(
+        $policy$
+          create policy %I on public.%I
+          for select to authenticated
+          using (
+            user_id = auth.uid()
+            or public.can_read_family_row(family_id, %L, id, created_at)
+          )
+        $policy$,
+        rec.table_name || ' owner select',
+        rec.table_name,
+        rec.module_id
+      );
+    elsif rec.category_column = 'category_id' then
       execute format(
         $policy$
           create policy %I on public.%I
@@ -279,23 +303,17 @@ begin
   end loop;
 end $$;
 
--- Categories need created_at-aware visibility; refine SELECT using row created_at.
-drop policy if exists "categories owner select" on public.categories;
-create policy "categories owner select"
-on public.categories
-for select
-to authenticated
-using (
-  user_id = auth.uid()
-  or public.can_read_family_row(family_id, 'categories', id, created_at)
-);
-
 -- Helper to attach insert/update/delete policies without SELECT (avoids bypassing module RLS).
 create or replace function public._tmp_add_family_write_policies(target_table text)
 returns void
 language plpgsql
 as $$
 begin
+  execute format('drop policy if exists %I on public.%I', target_table || ' owner insert', target_table);
+  execute format('drop policy if exists %I on public.%I', target_table || ' owner update', target_table);
+  execute format('drop policy if exists %I on public.%I', target_table || ' owner delete', target_table);
+  execute format('drop policy if exists %I on public.%I', target_table || ' owner write', target_table);
+
   execute format(
     $policy$
       create policy %I on public.%I
@@ -341,6 +359,7 @@ $$;
 
 -- Recurring income templates
 drop policy if exists "recurring_income_templates owner access" on public.recurring_income_templates;
+drop policy if exists "recurring_income_templates owner select" on public.recurring_income_templates;
 create policy "recurring_income_templates owner select"
 on public.recurring_income_templates
 for select
@@ -357,6 +376,7 @@ select public._tmp_add_family_write_policies('recurring_income_templates');
 
 -- Projection / closures
 drop policy if exists "projection scenarios owner access" on public.projection_scenarios;
+drop policy if exists "projection scenarios owner select" on public.projection_scenarios;
 create policy "projection scenarios owner select"
 on public.projection_scenarios
 for select
@@ -372,6 +392,11 @@ using (
 select public._tmp_add_family_write_policies('projection_scenarios');
 
 drop policy if exists "projection scenario items owner access" on public.projection_scenario_items;
+drop policy if exists "projection scenario items owner select" on public.projection_scenario_items;
+drop policy if exists "projection scenario items owner insert" on public.projection_scenario_items;
+drop policy if exists "projection scenario items owner update" on public.projection_scenario_items;
+drop policy if exists "projection scenario items owner delete" on public.projection_scenario_items;
+drop policy if exists "projection scenario items owner write" on public.projection_scenario_items;
 create policy "projection scenario items owner select"
 on public.projection_scenario_items
 for select
@@ -449,6 +474,7 @@ using (
 );
 
 drop policy if exists "monthly closures owner access" on public.monthly_closures;
+drop policy if exists "monthly closures owner select" on public.monthly_closures;
 create policy "monthly closures owner select"
 on public.monthly_closures
 for select
@@ -465,6 +491,7 @@ select public._tmp_add_family_write_policies('monthly_closures');
 
 -- Credit card statements
 drop policy if exists "credit card statements owner access" on public.credit_card_statements;
+drop policy if exists "credit card statements owner select" on public.credit_card_statements;
 create policy "credit card statements owner select"
 on public.credit_card_statements
 for select
