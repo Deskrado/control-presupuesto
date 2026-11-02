@@ -5,7 +5,7 @@ import { createClient } from "@/lib/supabase/client"
 import { useCategories, useCurrencies, useUserSettings } from "@/components/dashboard/use-dashboard-data"
 import { PortfolioIntegrations } from "@/components/investments/portfolio-integrations"
 import type { FamilyMember, FamilyMemberPermissions, Profile } from "@/lib/types"
-import { ALL_FAMILY_MODULE_IDS, FAMILY_MODULES, isCategoryVisibleForMember } from "@/lib/family-visibility"
+import { ALL_FAMILY_MODULE_IDS, FAMILY_MODULES, visibleCategoryIdsForEditor } from "@/lib/family-visibility"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -288,11 +288,10 @@ export function SettingsManagement() {
       return
     }
 
-    const visibleCategoryIds = Array.isArray(selectedPermissions?.visible_category_ids)
-      ? (categories || [])
-          .filter((category) => isCategoryVisibleForMember(category, selectedPermissions))
-          .map((category) => category.id)
-      : selectedPermissions?.visible_category_ids ?? null
+    const visibleCategoryIds = visibleCategoryIdsForEditor(
+      selectedPermissions?.visible_category_ids,
+      categories,
+    )
 
     setPermissionsForm({
       allowed_modules: selectedPermissions?.allowed_modules || ALL_FAMILY_MODULE_IDS,
@@ -597,7 +596,7 @@ export function SettingsManagement() {
         .filter(([, value]) => value !== "" && Number.isFinite(Number(value)))
         .map(([key, value]) => [key, Number(value)])
 
-      const { error } = await supabase
+      const { data, error } = await supabase
         .from("family_member_permissions")
         .upsert({
           family_id: activeFamilyId,
@@ -609,10 +608,15 @@ export function SettingsManagement() {
           show_investments: permissionsForm.show_investments && permissionsForm.allowed_modules.includes("investments"),
           created_by: userId,
         }, { onConflict: "family_member_id" })
+        .select("id, visible_category_ids")
+        .maybeSingle()
 
       if (error) throw error
+      if (!data) throw new Error("No se pudo guardar la vista (RLS o permisos)")
       await reloadActiveFamilyAccess()
       invalidateCache("family-visibility")
+      invalidateCache("categories")
+      invalidateCache("groups")
       invalidateCacheByPrefix("transactions")
       setMessage("Permisos guardados")
     } catch (err) {

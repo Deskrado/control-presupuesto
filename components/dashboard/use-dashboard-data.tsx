@@ -152,7 +152,10 @@ export function useFamilyVisibility() {
 
       const membership = ((memberships || []) as FamilyMember[])[0] || null
       if (!membership) return { membership: null, permissions: null }
-      if (membership.role === "owner") return { membership, permissions: null }
+      // Owners/admins configure visibility for others; their own reads stay unrestricted.
+      if (membership.role === "owner" || membership.role === "admin") {
+        return { membership, permissions: null }
+      }
 
       const { data: permissions, error: permissionsError } = await supabase
         .from("family_member_permissions")
