@@ -3,6 +3,8 @@ import { join } from "node:path"
 import { createClient } from "@supabase/supabase-js"
 
 const PAGE_SIZE = 1000
+// Keep in sync with lib/credit-card-billing.ts CREDIT_CARD_PAYMENT_APPROVAL_START_DATE.
+// Installments on/after this date stay pending until statement payment (cash impact).
 const APPROVAL_START_DATE = "2026-06-01"
 
 function loadEnv() {
@@ -105,14 +107,21 @@ for (const purchase of purchases) {
     if (existingKeys.has(keyForInstallment)) continue
 
     const dueDate = addMonthsToDateOnly(firstDueDate, index)
+    // Align with buildCreditCardInstallmentTransactions: unpaid statement debt is pending.
     const requiresApproval = dueDate >= APPROVAL_START_DATE
+    const totalAmount = Number(purchase.total_amount ?? (Number(purchase.installment_amount) * Number(purchase.total_installments || 0)))
+    const totalInstallments = Math.max(Math.floor(Number(purchase.total_installments) || 1), 1)
+    const totalCents = Math.round(totalAmount * 100)
+    const baseCents = Math.floor(totalCents / totalInstallments)
+    const remainderCents = totalCents - baseCents * totalInstallments
+    const amount = Math.round(baseCents + (index < remainderCents ? 1 : 0)) / 100
     missing.push({
       user_id: purchase.user_id,
       family_id: purchase.family_id,
       created_by: purchase.user_id,
       description: purchase.description,
-      amount: Number(purchase.installment_amount),
-      budgeted_amount: Number(purchase.installment_amount),
+      amount,
+      budgeted_amount: amount,
       currency_id: purchase.currency_id || purchase.credit_card.currency_id || null,
       category_id: purchase.category_id || null,
       group_id: purchase.category?.group_id || null,
