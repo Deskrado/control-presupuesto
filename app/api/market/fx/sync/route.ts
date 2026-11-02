@@ -1,21 +1,26 @@
 import { NextRequest, NextResponse } from "next/server"
-import { createClient } from "@/lib/supabase/server"
 import { createAdminClient } from "@/lib/supabase/admin"
+import { requireCronSecret } from "@/lib/supabase/admin-guards"
 import { fetchDolarApiQuotes } from "@/lib/integrations/fx/dolarapi"
 
-async function isAllowed(request: NextRequest) {
-  const cronSecret = process.env.CRON_SECRET
-  const authHeader = request.headers.get("authorization")
-  if (cronSecret && authHeader === `Bearer ${cronSecret}`) return true
+/**
+ * FX sync writes market data with the service role. Restrict to cron credentials
+ * so any authenticated session cannot trigger privileged upserts.
+ */
+function isAllowed(request: NextRequest) {
+  if (requireCronSecret(request)) return true
 
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  return !!user
+  // Local/dev convenience only when CRON_SECRET is intentionally unset.
+  if (!process.env.CRON_SECRET && process.env.NODE_ENV !== "production") {
+    return true
+  }
+
+  return false
 }
 
 export async function POST(request: NextRequest) {
   try {
-    if (!(await isAllowed(request))) {
+    if (!isAllowed(request)) {
       return NextResponse.json({ error: "No autorizado" }, { status: 401 })
     }
 

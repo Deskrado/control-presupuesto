@@ -3,10 +3,10 @@ import { NextRequest, NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
 import { createAdminClient } from "@/lib/supabase/admin"
 import { decryptJson, encryptJson } from "@/lib/integrations/crypto"
+import { iolSecretHasPassword, stripIolPassword, toPersistedIolSecret } from "@/lib/integrations/iol-secret"
 import {
   fetchIolReadOnlyData,
   IolSecret,
-  loginToIol,
   parseIolPositions,
   refreshIolToken,
 } from "@/lib/integrations/providers/iol"
@@ -28,12 +28,12 @@ async function persistIolSecret(input: {
   currentSecret: IolSecret
   token: Pick<IolSecret, "access_token" | "refresh_token" | "token_type" | "expires_in">
 }) {
-  const nextSecret: IolSecret = {
-    ...input.currentSecret,
-    ...input.token,
-    obtained_at: new Date().toISOString(),
-    base_url: input.currentSecret.base_url,
-  }
+  const nextSecret = toPersistedIolSecret({
+    token: input.token,
+    baseUrl: input.currentSecret.base_url,
+    username: input.currentSecret.username,
+    previous: stripIolPassword(input.currentSecret),
+  })
 
   await input.admin.from("integration_secrets").update(encryptJson(nextSecret)).eq("id", input.secretId)
   await input.admin
@@ -49,40 +49,29 @@ async function persistIolSecret(input: {
   return nextSecret
 }
 
-async function refreshOrLoginIol(input: {
+async function refreshIolOrRequireReauth(input: {
   admin: ReturnType<typeof createAdminClient>
   secretId: string
   connectionId: string
   secret: IolSecret
 }) {
-  try {
-    const refreshed = await refreshIolToken({
-      refreshToken: input.secret.refresh_token,
-      baseUrl: input.secret.base_url,
-    })
-    return persistIolSecret({
-      admin: input.admin,
-      secretId: input.secretId,
-      connectionId: input.connectionId,
-      currentSecret: input.secret,
-      token: refreshed,
-    })
-  } catch (refreshError) {
-    if (!input.secret.username || !input.secret.password) throw refreshError
-
-    const token = await loginToIol({
-      username: input.secret.username,
-      password: input.secret.password,
-      baseUrl: input.secret.base_url,
-    })
-    return persistIolSecret({
-      admin: input.admin,
-      secretId: input.secretId,
-      connectionId: input.connectionId,
-      currentSecret: input.secret,
-      token,
-    })
+  // If a legacy ciphertext still contains a password, drop it on the next successful rewrite.
+  const sanitized = stripIolPassword(input.secret)
+  if (iolSecretHasPassword(input.secret)) {
+    await input.admin.from("integration_secrets").update(encryptJson(sanitized)).eq("id", input.secretId)
   }
+
+  const refreshed = await refreshIolToken({
+    refreshToken: sanitized.refresh_token,
+    baseUrl: sanitized.base_url,
+  })
+  return persistIolSecret({
+    admin: input.admin,
+    secretId: input.secretId,
+    connectionId: input.connectionId,
+    currentSecret: sanitized,
+    token: refreshed,
+  })
 }
 
 export async function POST(request: NextRequest) {
@@ -119,7 +108,7 @@ export async function POST(request: NextRequest) {
     const shouldRefreshBeforeSync = syncMode === "manual" || !expiresAt || expiresAt - Date.now() < 2 * 60_000
     if (shouldRefreshBeforeSync) {
       try {
-        secret = await refreshOrLoginIol({
+        secret = await refreshIolOrRequireReauth({
           admin,
           secretId: connection.secret.id,
           connectionId: connection.id,
@@ -176,7 +165,7 @@ export async function POST(request: NextRequest) {
       (value) => typeof value === "string" && value.includes("respondio 401"),
     )
     if (hasUnauthorizedRead) {
-      secret = await refreshOrLoginIol({
+      secret = await refreshIolOrRequireReauth({
         admin,
         secretId: connection.secret.id,
         connectionId: connection.id,

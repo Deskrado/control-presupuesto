@@ -8,7 +8,12 @@ type IolTokenResponse = {
 export type IolSecret = IolTokenResponse & {
   obtained_at: string
   base_url: string
+  /** Non-secret account label for reconnect UX. Never persist password. */
   username?: string
+  /**
+   * @deprecated Legacy field. Passwords must not be persisted; ignored if present
+   * in historical ciphertext and stripped on next secret rewrite.
+   */
   password?: string
 }
 
