@@ -14,7 +14,8 @@ import {
 } from "@/components/dashboard/use-dashboard-data"
 import { formatCurrency } from "@/lib/currency"
 import { toLocalDateOnly } from "@/lib/date-only"
-import type { BrokerConnection, BrokerPosition, Currency, FxQuote, Investment, SavingsGoal } from "@/lib/types"
+import { convertToCurrency, getLatestFxRate } from "@/lib/wealth-summary"
+import type { BrokerConnection, BrokerPosition, Currency, Investment, SavingsGoal } from "@/lib/types"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -163,23 +164,6 @@ async function postJson(path: string, body?: Record<string, unknown>) {
 
 function shouldAutoSyncConnection(_connection: BrokerConnection) {
   return false
-}
-
-function getLatestFxRate(quotes: FxQuote[] | undefined, fromCode: string, toCode: string) {
-  if (fromCode === toCode) return 1
-  const quote = (quotes || []).find((item) =>
-    item.base_currency?.code === fromCode &&
-    item.quote_currency?.code === toCode
-  )
-  if (!quote) return null
-  return Number(quote.ask || quote.mid || quote.bid || 0) || null
-}
-
-function convertToCurrency(amount: number, from: Currency | null | undefined, to: Currency | null | undefined, quotes: FxQuote[] | undefined) {
-  const fromCode = from?.code || to?.code || "ARS"
-  const toCode = to?.code || fromCode
-  const rate = getLatestFxRate(quotes, fromCode, toCode)
-  return rate ? amount * rate : amount
 }
 
 function isQuotedPerHundred(kind: string | null | undefined) {

@@ -336,17 +336,23 @@ export function useMonthlyTransactions() {
     }
     if (jobs.length === 0) return
 
-    Promise.all(jobs.map((job) => job.request))
-      .then((responses) => {
-        if (responses.some((response) => Number(response.created || 0) > 0)) {
-          invalidateCacheByPrefix("transactions")
-          invalidateCaches(["credit-card-purchases"])
+    // Settle per job so a single failure only clears that job's guard —
+    // successful siblings stay guarded and are not re-fired.
+    Promise.allSettled(jobs.map((job) => job.request)).then((results) => {
+      let createdAny = false
+      results.forEach((result, index) => {
+        if (result.status === "fulfilled") {
+          if (Number(result.value.created || 0) > 0) createdAny = true
+          return
         }
+        jobs[index]?.guard.delete(periodKey)
+        console.error("No se pudieron materializar los movimientos del período", result.reason)
       })
-      .catch((error) => {
-        for (const job of jobs) job.guard.delete(periodKey)
-        console.error("No se pudieron materializar los movimientos del período", error)
-      })
+      if (createdAny) {
+        invalidateCacheByPrefix("transactions")
+        invalidateCaches(["credit-card-purchases"])
+      }
+    })
   }, [visibilityScope, selectedMonth, selectedYear])
 
   return {

@@ -241,6 +241,60 @@ describe("buildAnnualProjection", () => {
     expect(august.savings).toBe(900)
   })
 
+  it("proyecta sintéticos aunque exista solo un tombstone archivado de la cuota", () => {
+    // start 2026-07-01, close 25 / due 10 → first due 2026-08-10;
+    // installmentIndex 1 (cuota 2) → 2026-09-10.
+    const [september] = buildAnnualProjection({
+      year: 2026,
+      selectedMonth: 8,
+      asOfYear: 2026,
+      asOfMonth: 8,
+      startYear: 2026,
+      startMonth: 9,
+      monthsAhead: 1,
+      purchases: [{
+        id: "purchase-archived",
+        user_id: "user-id",
+        credit_card_id: "card-1",
+        category_id: null,
+        description: "Compra",
+        total_amount: 300,
+        installment_amount: 100,
+        total_installments: 3,
+        current_installment: 1,
+        start_date: "2026-07-01",
+        is_active: true,
+        created_at: "2026-07-01T00:00:00.000Z",
+        credit_card: {
+          id: "card-1",
+          user_id: "user-id",
+          name: "Visa",
+          last_four: "1234",
+          brand: "visa",
+          credit_limit: null,
+          closing_day: 25,
+          due_day: 10,
+          currency_id: null,
+          is_active: true,
+          created_at: "2026-01-01T00:00:00.000Z",
+        },
+        transactions: [{
+          id: "tombstone",
+          installment_number: 2,
+          transaction_date: "2026-09-10",
+          amount: 100,
+          budgeted_amount: 100,
+          status: "pending",
+          archived_at: "2026-08-01T00:00:00.000Z",
+        }],
+      }],
+    })
+
+    expect(september.periodType).toBe("projected")
+    expect(september.installments).toBe(100)
+    expect(september.expenses).toBe(100)
+  })
+
   it("excluye pendientes del promedio histórico de proyección", () => {
     const [october] = buildAnnualProjection({
       year: 2026,
