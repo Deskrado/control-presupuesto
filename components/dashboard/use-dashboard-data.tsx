@@ -5,6 +5,7 @@ import { useEffect } from "react"
 import useSWR, { mutate } from "swr"
 import { invalidateCacheByPrefix, invalidateCaches } from "@/lib/swr-cache"
 import { getMonthRange } from "@/lib/currency"
+import { getMonthBounds } from "@/lib/date-only"
 import { useDashboard } from "./dashboard-context"
 import type {
   Transaction,
@@ -222,7 +223,7 @@ export function useCreditCards() {
 export function useCreditCardStatementTransactions(year: number, month: number) {
   const { data: visibility } = useFamilyVisibility()
   const visibilityScope = getVisibilityScope(visibility)
-  const endDate = new Date(year, month, 0).toISOString().split("T")[0]
+  const endDate = getMonthBounds(year, month).end
 
   const result = useSWR<Transaction[]>(
     visibilityScope ? ["credit-card-statement-transactions", year, month, visibilityScope] : null,
@@ -290,8 +291,7 @@ export function useMonthlyTransactions() {
   const { selectedMonth, selectedYear } = useDashboard()
   const { data: visibility } = useFamilyVisibility()
   const visibilityScope = getVisibilityScope(visibility)
-  const startDate = new Date(selectedYear, selectedMonth - 1, 1).toISOString().split("T")[0]
-  const endDate = new Date(selectedYear, selectedMonth, 0).toISOString().split("T")[0]
+  const { start: startDate, end: endDate } = getMonthBounds(selectedYear, selectedMonth)
   const key = visibilityScope ? ["transactions", selectedYear, selectedMonth, visibilityScope] : null
 
   const result = useSWR<Transaction[]>(
