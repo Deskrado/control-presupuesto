@@ -212,8 +212,12 @@ export function buildAnnualProjection({
         const installmentDueDate = getCreditCardInstallmentDueDate(purchase.start_date, purchase.credit_card, installmentIndex)
         if (getYearFromDateOnly(installmentDueDate) !== pointYear || getMonthIndexFromDateOnly(installmentDueDate) !== monthIndexInYear) continue
 
+        // Tombstones must not suppress a synthetic future installment — same
+        // rule as hasInstallmentInPeriod (ignore archived_at rows).
         const hasCurrentTransaction = (purchase.transactions || []).some(
-          (transaction) => Number(transaction.installment_number || 0) === installmentIndex + 1,
+          (transaction) =>
+            !transaction.archived_at &&
+            Number(transaction.installment_number || 0) === installmentIndex + 1,
         )
         if (hasCurrentTransaction) continue
         const installmentAmount = Number(purchase.installment_amount || 0)

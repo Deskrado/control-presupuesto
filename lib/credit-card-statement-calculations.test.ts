@@ -86,6 +86,41 @@ describe("credit card statement calculations", () => {
     })
   })
 
+  it("computes overpayment against amount_due (expected + previous_balance), not expected alone", () => {
+    // Legacy backfill used paid - expected (= 20) whenever paid > expected.
+    // App + repair migration use paid - amount_due (= 0 here).
+    expect(calculateStatementPaymentApplication({
+      expectedAmount: 100,
+      previousBalance: 30,
+      paidAmount: 120,
+    })).toMatchObject({
+      amountDue: 130,
+      adjustmentAmount: 0,
+      carryoverBalance: 10,
+    })
+
+    expect(calculateStatementPaymentApplication({
+      expectedAmount: 100,
+      previousBalance: 30,
+      paidAmount: 150,
+    })).toMatchObject({
+      amountDue: 130,
+      adjustmentAmount: 20,
+      carryoverBalance: -20,
+    })
+
+    // Prior credit: paid can be below expected yet still overpay amount_due.
+    expect(calculateStatementPaymentApplication({
+      expectedAmount: 100,
+      previousBalance: -20,
+      paidAmount: 90,
+    })).toMatchObject({
+      amountDue: 80,
+      adjustmentAmount: 10,
+      carryoverBalance: -10,
+    })
+  })
+
   it("allocates payment in cents without inventing a minimum transaction amount", () => {
     const allocation = allocateStatementPayment([
       { id: "a", weight: 10 },

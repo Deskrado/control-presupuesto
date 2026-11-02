@@ -39,6 +39,8 @@ export async function POST(request: NextRequest) {
     const existingKeys = new Set<string>()
 
     if (purchaseIds.length > 0) {
+      // Include archived tombstones so we do not attempt inserts that the
+      // unique (purchase, installment) constraint would ignore anyway.
       const { data: existingTransactions, error: existingError } = await supabase
         .from("transactions")
         .select("credit_card_purchase_id, installment_number")
@@ -69,15 +71,21 @@ export async function POST(request: NextRequest) {
       }
     }
 
+    let created = 0
     if (inserts.length > 0) {
-      const { error: insertError } = await supabase.from("transactions").upsert(inserts, {
-        onConflict: "credit_card_purchase_id,installment_number",
-        ignoreDuplicates: true,
-      })
+      const { data: upserted, error: insertError } = await supabase
+        .from("transactions")
+        .upsert(inserts, {
+          onConflict: "credit_card_purchase_id,installment_number",
+          ignoreDuplicates: true,
+        })
+        .select("id")
       if (insertError) throw insertError
+      // With ignoreDuplicates, select returns only rows that were actually inserted.
+      created = upserted?.length || 0
     }
 
-    return NextResponse.json({ ok: true, created: inserts.length })
+    return NextResponse.json({ ok: true, created, attempted: inserts.length })
   } catch (error) {
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Error al materializar cuotas" },
