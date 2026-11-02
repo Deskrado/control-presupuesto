@@ -581,6 +581,13 @@ export function SettingsManagement() {
       ? Array.from(new Set([...current, categoryId]))
       : current.filter((id) => id !== categoryId)
 
+    // Disabling a category also drops its mask so a later re-enable is truly visible.
+    if (!enabled && permissionsForm.masked_category_amounts[categoryId] !== undefined) {
+      const { [categoryId]: _removed, ...masked_category_amounts } = permissionsForm.masked_category_amounts
+      setPermissionsForm({ ...permissionsForm, visible_category_ids: next, masked_category_amounts })
+      return
+    }
+
     setPermissionsForm({ ...permissionsForm, visible_category_ids: next })
   }
 
@@ -592,8 +599,14 @@ export function SettingsManagement() {
       if (!activeFamilyId || !selectedMember) throw new Error("Seleccioná un miembro")
       if (!canManageFamily) throw new Error("No tenés permisos para administrar miembros")
 
+      const visibleIds = permissionsForm.visible_category_ids
       const maskedEntries = Object.entries(permissionsForm.masked_category_amounts)
-        .filter(([, value]) => value !== "" && Number.isFinite(Number(value)))
+        .filter(([categoryId, value]) => {
+          if (value === "" || !Number.isFinite(Number(value))) return false
+          // Masks only apply to categories the member is allowed to see.
+          if (Array.isArray(visibleIds) && !visibleIds.includes(categoryId)) return false
+          return true
+        })
         .map(([key, value]) => [key, Number(value)])
 
       const { data, error } = await supabase
@@ -1064,7 +1077,7 @@ export function SettingsManagement() {
                   <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                     <div>
                       <p className="font-medium">Categorías visibles</p>
-                      <p className="text-sm text-muted-foreground">Si desactivás una categoría, sus movimientos no aparecen ni entran en cálculos.</p>
+                      <p className="text-sm text-muted-foreground">Si desactivás una categoría, sus movimientos no aparecen ni entran en cálculos. Activarla la vuelve visible para ese miembro.</p>
                     </div>
                     <Button
                       type="button"
@@ -1104,7 +1117,7 @@ export function SettingsManagement() {
                 <div className="space-y-3">
                   <div>
                     <p className="font-medium">Máscara de importe</p>
-                    <p className="text-sm text-muted-foreground">Buscá el gasto o ingreso que querés cubrir, seleccionalo y definí el monto que verá el miembro.</p>
+                    <p className="text-sm text-muted-foreground">Solo aplica a categorías visibles: el miembro ve el concepto con este monto en lugar del real.</p>
                   </div>
 
                   <div className="grid gap-3 md:grid-cols-[minmax(240px,1fr)_220px_auto]">
