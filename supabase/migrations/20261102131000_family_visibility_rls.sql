@@ -1,7 +1,14 @@
 -- SEC-03: enforce family module/category visibility in RLS (not only UI).
 -- Owners and members without a permissions row remain unrestricted.
--- Masked categories are treated as non-readable for the restricted member
--- (stricter than UI placeholders; prevents amount exfiltration via direct SELECT).
+-- Masked categories are treated as non-readable for the restricted member.
+--
+-- IMPORTANT (prod failure SQLSTATE 42703):
+-- Do NOT assume every table has category_id. Production `budgets` has no
+-- category_id column; `categories` uses `id` (not category_id). Only reference
+-- category_id when information_schema confirms the column exists.
+--
+-- Idempotent: DROP POLICY IF EXISTS before every CREATE so a half-applied
+-- failed run can be safely re-executed by db:migrate.
 
 create or replace function public.my_family_permissions(target_family_id uuid)
 returns public.family_member_permissions
@@ -56,13 +63,11 @@ begin
     return false;
   end if;
 
-  -- Owners are never restricted by module permissions.
   if member_role = 'owner' then
     return true;
   end if;
 
   perms := public.my_family_permissions(target_family_id);
-  -- No permissions row => unrestricted (matches client canApplyFamilyRestrictions).
   if perms is null then
     return true;
   end if;
@@ -122,7 +127,6 @@ begin
     return true;
   end if;
 
-  -- Masked categories are not readable via direct table SELECT for restricted members.
   masked := perms.masked_category_amounts;
   if masked is not null
      and masked ? target_category_id::text
@@ -178,29 +182,133 @@ grant execute on function public.can_access_family_module(uuid, text) to authent
 grant execute on function public.can_view_family_category(uuid, uuid, timestamptz) to authenticated;
 grant execute on function public.can_read_family_row(uuid, text, uuid, timestamptz) to authenticated;
 
--- Replace broad ALL policies with module-aware SELECT + existing write checks.
+create or replace function public._family_visibility_table_has_column(target_table text, target_column text)
+returns boolean
+language sql
+stable
+set search_path = public
+as $$
+  select exists (
+    select 1
+    from information_schema.columns c
+    where c.table_schema = 'public'
+      and c.table_name = target_table
+      and c.column_name = target_column
+  );
+$$;
+
+create or replace function public._family_visibility_drop_owner_policies(target_table text)
+returns void
+language plpgsql
+set search_path = public
+as $$
+begin
+  execute format('drop policy if exists %I on public.%I', target_table || ' owner access', target_table);
+  execute format('drop policy if exists %I on public.%I', target_table || ' owner select', target_table);
+  execute format('drop policy if exists %I on public.%I', target_table || ' owner insert', target_table);
+  execute format('drop policy if exists %I on public.%I', target_table || ' owner update', target_table);
+  execute format('drop policy if exists %I on public.%I', target_table || ' owner delete', target_table);
+  execute format('drop policy if exists %I on public.%I', target_table || ' owner write', target_table);
+end;
+$$;
+
+create or replace function public._family_visibility_add_write_policies(target_table text)
+returns void
+language plpgsql
+set search_path = public
+as $$
+begin
+  if not public._family_visibility_table_has_column(target_table, 'user_id')
+     or not public._family_visibility_table_has_column(target_table, 'family_id') then
+    raise exception 'Table %.% is missing user_id/family_id required for family write policies', 'public', target_table;
+  end if;
+
+  execute format(
+    $policy$
+      create policy %I on public.%I
+      for insert to authenticated
+      with check (
+        user_id = auth.uid()
+        or (family_id is not null and public.can_edit_family(family_id))
+      )
+    $policy$,
+    target_table || ' owner insert',
+    target_table
+  );
+
+  execute format(
+    $policy$
+      create policy %I on public.%I
+      for update to authenticated
+      using (
+        user_id = auth.uid()
+        or (family_id is not null and public.can_edit_family(family_id))
+      )
+      with check (
+        user_id = auth.uid()
+        or (family_id is not null and public.can_edit_family(family_id))
+      )
+    $policy$,
+    target_table || ' owner update',
+    target_table
+  );
+
+  execute format(
+    $policy$
+      create policy %I on public.%I
+      for delete to authenticated
+      using (
+        user_id = auth.uid()
+        or (family_id is not null and public.can_edit_family(family_id))
+      )
+    $policy$,
+    target_table || ' owner delete',
+    target_table
+  );
+end;
+$$;
+
+-- Replace broad ALL policies with module-aware SELECT + write checks.
 do $$
 declare
   rec record;
+  has_category_id boolean;
 begin
   for rec in
     select *
     from (values
-      ('groups', 'categories', false),
-      ('categories', 'categories', true),
-      ('credit_cards', 'credit_cards', false),
-      ('credit_card_purchases', 'credit_cards', false),
-      ('transactions', 'transactions', true),
-      ('budgets', 'transactions', true),
-      ('investments', 'investments', false),
-      ('savings_goals', 'savings', false),
-      ('savings_movements', 'savings', false),
-      ('monthly_savings', 'savings', false)
-    ) as t(table_name, module_id, has_category)
+      ('groups', 'categories'),
+      ('categories', 'categories'),
+      ('credit_cards', 'credit_cards'),
+      ('credit_card_purchases', 'credit_cards'),
+      ('transactions', 'transactions'),
+      -- budgets: module-only. Prod schema has no budgets.category_id (42703).
+      ('budgets', 'transactions'),
+      ('investments', 'investments'),
+      ('savings_goals', 'savings'),
+      ('savings_movements', 'savings'),
+      ('monthly_savings', 'savings')
+    ) as t(table_name, module_id)
   loop
-    execute format('drop policy if exists %I on public.%I', rec.table_name || ' owner access', rec.table_name);
+    perform public._family_visibility_drop_owner_policies(rec.table_name);
 
-    if rec.has_category then
+    has_category_id := public._family_visibility_table_has_column(rec.table_name, 'category_id');
+
+    if rec.table_name = 'categories' then
+      execute format(
+        $policy$
+          create policy %I on public.%I
+          for select to authenticated
+          using (
+            user_id = auth.uid()
+            or public.can_read_family_row(family_id, %L, id, created_at)
+          )
+        $policy$,
+        rec.table_name || ' owner select',
+        rec.table_name,
+        rec.module_id
+      );
+    elsif has_category_id then
       execute format(
         $policy$
           create policy %I on public.%I
@@ -234,113 +342,13 @@ begin
       );
     end if;
 
-    execute format(
-      $policy$
-        create policy %I on public.%I
-        for insert to authenticated
-        with check (
-          user_id = auth.uid()
-          or (family_id is not null and public.can_edit_family(family_id))
-        )
-      $policy$,
-      rec.table_name || ' owner insert',
-      rec.table_name
-    );
-
-    execute format(
-      $policy$
-        create policy %I on public.%I
-        for update to authenticated
-        using (
-          user_id = auth.uid()
-          or (family_id is not null and public.can_edit_family(family_id))
-        )
-        with check (
-          user_id = auth.uid()
-          or (family_id is not null and public.can_edit_family(family_id))
-        )
-      $policy$,
-      rec.table_name || ' owner update',
-      rec.table_name
-    );
-
-    execute format(
-      $policy$
-        create policy %I on public.%I
-        for delete to authenticated
-        using (
-          user_id = auth.uid()
-          or (family_id is not null and public.can_edit_family(family_id))
-        )
-      $policy$,
-      rec.table_name || ' owner delete',
-      rec.table_name
-    );
+    perform public._family_visibility_add_write_policies(rec.table_name);
   end loop;
 end $$;
 
--- Categories need created_at-aware visibility; refine SELECT using row created_at.
-drop policy if exists "categories owner select" on public.categories;
-create policy "categories owner select"
-on public.categories
-for select
-to authenticated
-using (
-  user_id = auth.uid()
-  or public.can_read_family_row(family_id, 'categories', id, created_at)
-);
-
--- Helper to attach insert/update/delete policies without SELECT (avoids bypassing module RLS).
-create or replace function public._tmp_add_family_write_policies(target_table text)
-returns void
-language plpgsql
-as $$
-begin
-  execute format(
-    $policy$
-      create policy %I on public.%I
-      for insert to authenticated
-      with check (
-        user_id = auth.uid()
-        or (family_id is not null and public.can_edit_family(family_id))
-      )
-    $policy$,
-    target_table || ' owner insert',
-    target_table
-  );
-  execute format(
-    $policy$
-      create policy %I on public.%I
-      for update to authenticated
-      using (
-        user_id = auth.uid()
-        or (family_id is not null and public.can_edit_family(family_id))
-      )
-      with check (
-        user_id = auth.uid()
-        or (family_id is not null and public.can_edit_family(family_id))
-      )
-    $policy$,
-    target_table || ' owner update',
-    target_table
-  );
-  execute format(
-    $policy$
-      create policy %I on public.%I
-      for delete to authenticated
-      using (
-        user_id = auth.uid()
-        or (family_id is not null and public.can_edit_family(family_id))
-      )
-    $policy$,
-    target_table || ' owner delete',
-    target_table
-  );
-end;
-$$;
-
 -- Recurring income templates
 drop policy if exists "recurring_income_templates owner access" on public.recurring_income_templates;
+select public._family_visibility_drop_owner_policies('recurring_income_templates');
 create policy "recurring_income_templates owner select"
 on public.recurring_income_templates
 for select
@@ -353,10 +361,11 @@ using (
     and public.can_access_family_module(family_id, 'transactions')
   )
 );
-select public._tmp_add_family_write_policies('recurring_income_templates');
+select public._family_visibility_add_write_policies('recurring_income_templates');
 
 -- Projection / closures
 drop policy if exists "projection scenarios owner access" on public.projection_scenarios;
+select public._family_visibility_drop_owner_policies('projection_scenarios');
 create policy "projection scenarios owner select"
 on public.projection_scenarios
 for select
@@ -369,9 +378,14 @@ using (
     and public.can_access_family_module(family_id, 'projections')
   )
 );
-select public._tmp_add_family_write_policies('projection_scenarios');
+select public._family_visibility_add_write_policies('projection_scenarios');
 
 drop policy if exists "projection scenario items owner access" on public.projection_scenario_items;
+drop policy if exists "projection scenario items owner select" on public.projection_scenario_items;
+drop policy if exists "projection scenario items owner insert" on public.projection_scenario_items;
+drop policy if exists "projection scenario items owner update" on public.projection_scenario_items;
+drop policy if exists "projection scenario items owner delete" on public.projection_scenario_items;
+drop policy if exists "projection scenario items owner write" on public.projection_scenario_items;
 create policy "projection scenario items owner select"
 on public.projection_scenario_items
 for select
@@ -449,6 +463,7 @@ using (
 );
 
 drop policy if exists "monthly closures owner access" on public.monthly_closures;
+select public._family_visibility_drop_owner_policies('monthly_closures');
 create policy "monthly closures owner select"
 on public.monthly_closures
 for select
@@ -461,10 +476,11 @@ using (
     and public.can_access_family_module(family_id, 'projections')
   )
 );
-select public._tmp_add_family_write_policies('monthly_closures');
+select public._family_visibility_add_write_policies('monthly_closures');
 
 -- Credit card statements
 drop policy if exists "credit card statements owner access" on public.credit_card_statements;
+select public._family_visibility_drop_owner_policies('credit_card_statements');
 create policy "credit card statements owner select"
 on public.credit_card_statements
 for select
@@ -477,6 +493,10 @@ using (
     and public.can_access_family_module(family_id, 'credit_cards')
   )
 );
-select public._tmp_add_family_write_policies('credit_card_statements');
+select public._family_visibility_add_write_policies('credit_card_statements');
 
+-- Temporary helpers only used during this migration.
+drop function if exists public._family_visibility_add_write_policies(text);
+drop function if exists public._family_visibility_drop_owner_policies(text);
+drop function if exists public._family_visibility_table_has_column(text, text);
 drop function if exists public._tmp_add_family_write_policies(text);
