@@ -9,6 +9,11 @@ type MonthCashBalancesInput = Period & {
   initialBalance: number
   monthlySavings: number
   closures?: MonthlyClosure[]
+  familyId?: string | null
+}
+
+function closureRecency(closure: MonthlyClosure) {
+  return closure.closed_at || closure.created_at || ""
 }
 
 export function getPreviousPeriod({ year, month }: Period): Period {
@@ -17,11 +22,24 @@ export function getPreviousPeriod({ year, month }: Period): Period {
     : { year, month: month - 1 }
 }
 
+/**
+ * Resolve one closure for a period.
+ * Prefer the active family scope when provided; otherwise the latest closure wins
+ * so multi-member family data stays deterministic.
+ */
 export function findMonthlyClosure(
   closures: MonthlyClosure[] | undefined,
-  { year, month }: Period,
+  { year, month, familyId }: Period & { familyId?: string | null },
 ) {
-  return (closures || []).find((closure) => closure.year === year && closure.month === month) || null
+  const matches = (closures || []).filter((closure) => closure.year === year && closure.month === month)
+  if (matches.length === 0) return null
+
+  const scoped = familyId
+    ? matches.filter((closure) => closure.family_id === familyId)
+    : matches
+
+  const candidates = scoped.length > 0 ? scoped : matches
+  return [...candidates].sort((left, right) => closureRecency(right).localeCompare(closureRecency(left)))[0] || null
 }
 
 export function getPreviousMonthClosingBalance({
@@ -29,8 +47,9 @@ export function getPreviousMonthClosingBalance({
   month,
   initialBalance,
   closures,
-}: Period & { initialBalance: number; closures?: MonthlyClosure[] }) {
-  const previousClosure = findMonthlyClosure(closures, getPreviousPeriod({ year, month }))
+  familyId,
+}: Period & { initialBalance: number; closures?: MonthlyClosure[]; familyId?: string | null }) {
+  const previousClosure = findMonthlyClosure(closures, { ...getPreviousPeriod({ year, month }), familyId })
   return previousClosure ? Number(previousClosure.cash_total || 0) : initialBalance
 }
 
@@ -40,8 +59,9 @@ export function getMonthCashBalances({
   initialBalance,
   monthlySavings,
   closures,
+  familyId,
 }: MonthCashBalancesInput) {
-  const selectedClosure = findMonthlyClosure(closures, { year, month })
+  const selectedClosure = findMonthlyClosure(closures, { year, month, familyId })
 
   if (selectedClosure) {
     const finalBalance = Number(selectedClosure.cash_total || 0)
@@ -51,7 +71,7 @@ export function getMonthCashBalances({
     }
   }
 
-  const openingBalance = getPreviousMonthClosingBalance({ year, month, initialBalance, closures })
+  const openingBalance = getPreviousMonthClosingBalance({ year, month, initialBalance, closures, familyId })
   return {
     initialBalance: openingBalance,
     finalBalance: openingBalance + monthlySavings,

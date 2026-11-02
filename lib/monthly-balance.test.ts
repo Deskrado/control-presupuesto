@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest"
-import { getMonthCashBalances, getPreviousMonthClosingBalance } from "@/lib/monthly-balance"
+import {
+  findMonthlyClosure,
+  getMonthCashBalances,
+  getPreviousMonthClosingBalance,
+} from "@/lib/monthly-balance"
 import type { MonthlyClosure } from "@/lib/types"
 
 function closure(overrides: Partial<MonthlyClosure>): MonthlyClosure {
@@ -72,5 +76,36 @@ describe("monthly cash balances", () => {
       initialBalance: 0,
       closures: [december],
     })).toBe(750_000)
+  })
+
+  it("elige el cierre familiar más reciente cuando hay varios del mismo período", () => {
+    const older = closure({
+      id: "older",
+      user_id: "member-a",
+      family_id: "family-1",
+      cash_total: 2_500_000,
+      closed_at: "2026-09-01T10:00:00.000Z",
+    })
+    const newer = closure({
+      id: "newer",
+      user_id: "member-b",
+      family_id: "family-1",
+      cash_total: 3_000_000,
+      closed_at: "2026-09-02T10:00:00.000Z",
+    })
+
+    expect(findMonthlyClosure([older, newer], {
+      year: 2026,
+      month: 8,
+      familyId: "family-1",
+    })?.id).toBe("newer")
+
+    expect(getPreviousMonthClosingBalance({
+      year: 2026,
+      month: 9,
+      initialBalance: 0,
+      familyId: "family-1",
+      closures: [older, newer],
+    })).toBe(3_000_000)
   })
 })

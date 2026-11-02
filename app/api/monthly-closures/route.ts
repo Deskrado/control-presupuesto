@@ -89,7 +89,7 @@ export async function POST(request: NextRequest) {
     const body = await request.json().catch(() => ({}))
     const year = Number(body.year)
     const month = Number(body.month)
-    const familyId = body.familyId === null ? null : String(body.familyId || await getDefaultFamilyId(user.id) || "")
+    const familyId = body.familyId === null ? null : String(body.familyId || await getDefaultFamilyId(user.id) || "") || null
 
     if (month < 1 || month > 12 || year < 2000 || year > 2100) {
       return NextResponse.json({ error: "Periodo inválido" }, { status: 400 })
@@ -97,7 +97,7 @@ export async function POST(request: NextRequest) {
 
     const payload = {
       user_id: user.id,
-      family_id: familyId || null,
+      family_id: familyId,
       year,
       month,
       income_total: Number(body.incomeTotal || 0),
@@ -111,14 +111,37 @@ export async function POST(request: NextRequest) {
       closed_at: new Date().toISOString(),
     }
 
-    const { data, error } = await supabase
+    // Family scope: one closure per (family, year, month). Personal: one per (user, year, month).
+    // Partial unique indexes are not reliable conflict targets for PostgREST upsert, so resolve manually.
+    let existingQuery = supabase
       .from("monthly_closures")
-      .upsert(payload, { onConflict: "user_id,year,month" })
-      .select("*")
-      .single()
+      .select("id")
+      .eq("year", year)
+      .eq("month", month)
+      .limit(1)
 
-    if (error) throw error
-    return NextResponse.json({ closure: data })
+    existingQuery = familyId
+      ? existingQuery.eq("family_id", familyId)
+      : existingQuery.eq("user_id", user.id).is("family_id", null)
+
+    const { data: existing, error: existingError } = await existingQuery.maybeSingle()
+    if (existingError) throw existingError
+
+    const write = existing?.id
+      ? await supabase
+          .from("monthly_closures")
+          .update(payload)
+          .eq("id", existing.id)
+          .select("*")
+          .single()
+      : await supabase
+          .from("monthly_closures")
+          .insert(payload)
+          .select("*")
+          .single()
+
+    if (write.error) throw write.error
+    return NextResponse.json({ closure: write.data })
   } catch (error) {
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Error al cerrar mes" },
