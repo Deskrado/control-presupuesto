@@ -31,7 +31,8 @@ import { Switch } from "@/components/ui/switch"
 import { ArrowLeft, Loader2 } from "lucide-react"
 import Link from "next/link"
 import { invalidateCache, invalidateCacheByPrefix } from "@/lib/swr-cache"
-import { buildCreditCardInstallmentTransactions } from "@/lib/credit-card-installments"
+import { buildCreditCardInstallmentTransactions, splitInstallmentAmounts } from "@/lib/credit-card-installments"
+import { toLocalDateOnly } from "@/lib/date-only"
 
 const transactionSchema = z.object({
   description: z.string().min(1, "La descripción es requerida"),
@@ -101,7 +102,7 @@ export function TransactionForm({ type, initialData, backUrl, redirectUrl }: Tra
       currency_id: initialData?.currency_id || defaultCurrency?.id || "",
       category_id: initialData?.category_id || "__none",
       group_id: initialData?.group_id || "__none",
-      transaction_date: initialData?.transaction_date || new Date().toISOString().split("T")[0],
+      transaction_date: initialData?.transaction_date || toLocalDateOnly(),
       payment_method: initialData?.payment_method || undefined,
       credit_card_id: initialData?.credit_card_id || "__none",
       is_installment_purchase: false,
@@ -206,7 +207,10 @@ export function TransactionForm({ type, initialData, backUrl, redirectUrl }: Tra
       const billingTransactionDate = getBillingDate(data.transaction_date)
       const requiresCardApproval =
         data.payment_method === "credit" && requiresCreditCardPaymentApproval(billingTransactionDate)
-      const transactionAmount = shouldCreateInstallments ? Number(data.amount) / installments : Number(data.amount)
+      const installmentAmounts = shouldCreateInstallments
+        ? splitInstallmentAmounts(Number(data.amount), installments)
+        : null
+      const transactionAmount = installmentAmounts ? installmentAmounts[0] : Number(data.amount)
       const budgetedAmount = data.budgeted_amount || transactionAmount
 
       if (shouldCreateRecurringExpense) {
@@ -242,7 +246,7 @@ export function TransactionForm({ type, initialData, backUrl, redirectUrl }: Tra
             credit_card_id: data.credit_card_id,
             description: data.description.trim(),
             total_amount: Number(data.amount),
-            installment_amount: transactionAmount,
+            installment_amount: installmentAmounts?.[0] || transactionAmount,
             total_installments: installments,
             current_installment: 1,
             start_date: data.transaction_date,
@@ -351,7 +355,8 @@ export function TransactionForm({ type, initialData, backUrl, redirectUrl }: Tra
                 family_id: createdPurchaseScope.family_id,
                 credit_card_id: selectedCreditCard.id,
                 description: data.description.trim(),
-                installment_amount: transactionAmount,
+                installment_amount: installmentAmounts?.[0] || transactionAmount,
+                total_amount: Number(data.amount),
                 total_installments: installments,
                 start_date: data.transaction_date,
                 category_id: data.category_id === "__none" ? null : data.category_id || null,

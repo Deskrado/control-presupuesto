@@ -1,6 +1,7 @@
 import { getCreditCardInstallmentDueDate } from "@/lib/credit-card-billing"
 import { getMonthIndexFromDateOnly, getYearFromDateOnly } from "@/lib/date-only"
 import { getRecurringProjectionForMonth } from "@/lib/recurring-projection"
+import { getTransactionActualAmount } from "@/lib/transaction-list-utils"
 import type {
   Category,
   CreditCardPurchase,
@@ -64,13 +65,14 @@ function getHistoricalAverageForCategory(
   const previousMonthlyTotals = new Map<number, number>()
 
   for (const transaction of transactions || []) {
-    if (transaction.status === "rejected") continue
+    // Historical averages must reflect paid cash only — pending card debt is excluded.
+    if ((transaction.status || "approved") !== "approved") continue
     if (transaction.type !== "expense") continue
     if (transaction.is_recurring) continue
     if (transaction.credit_card_purchase_id) continue
     if (transaction.category_id !== categoryId) continue
 
-    const amount = Number(transaction.amount || 0)
+    const amount = getTransactionActualAmount(transaction)
     if (amount <= 0) continue
 
     const transactionIndex = getYearFromDateOnly(transaction.transaction_date) * 12 + getMonthIndexFromDateOnly(transaction.transaction_date)
@@ -165,25 +167,26 @@ export function buildAnnualProjection({
     for (const transaction of transactions || []) {
       if (getYearFromDateOnly(transaction.transaction_date) !== pointYear || getMonthIndexFromDateOnly(transaction.transaction_date) !== monthIndexInYear) continue
 
-      const projectedAmount = transaction.status === "rejected" ? 0 : Number(transaction.amount || 0)
-      const actualAmount = transaction.status === "pending" || transaction.status === "rejected" ? 0 : projectedAmount
-      const includedAmount = isHistorical ? actualAmount : projectedAmount
+      // Cash totals always use realized amounts so pending card charges match the
+      // dashboard pending-until-pay model (debt ≠ cash spent).
+      const actualAmount = getTransactionActualAmount(transaction)
       if (transaction.type === "income") {
-        point.income += includedAmount
+        point.income += actualAmount
         point.actualIncome += actualAmount
         if (transaction.is_recurring) {
-          point.recurringIncome += includedAmount
+          point.recurringIncome += actualAmount
         }
       } else {
-        point.expenses += includedAmount
+        point.expenses += actualAmount
         point.actualExpenses += actualAmount
         if (transaction.is_recurring) {
-          point.recurringExpenses += includedAmount
+          point.recurringExpenses += actualAmount
         }
         if (transaction.credit_card_purchase_id && transaction.installment_number) {
-          point.installments += includedAmount
+          point.installments += actualAmount
         }
-        if (transaction.category_id && projectedCategoryIds.has(transaction.category_id)) {
+        // Only paid rows block historical-average fill-ins for that category.
+        if (actualAmount > 0 && transaction.category_id && projectedCategoryIds.has(transaction.category_id)) {
           categoriesWithActualExpense.add(transaction.category_id)
         }
       }

@@ -1,3 +1,5 @@
+import { getTransactionActualAmount, getTransactionBudgetedAmount } from "@/lib/transaction-list-utils"
+
 export const CREDIT_CARD_STATEMENT_ADJUSTMENT_SOURCE = "credit_card_statement_payment_adjustment"
 
 export function isStatementPaymentAdjustment(transaction: { metadata?: unknown }) {
@@ -38,11 +40,13 @@ export function getStatementTransactionAmount(transaction: {
   budgeted_amount?: number | null
   status?: string | null
 }) {
-  const value = transaction.status === "approved"
-    ? transaction.amount
-    : transaction.budgeted_amount ?? transaction.amount
+  const status = transaction.status || "approved"
+  if (status === "rejected") return 0
+  const value = status === "approved"
+    ? getTransactionActualAmount(transaction)
+    : getTransactionBudgetedAmount(transaction)
 
-  return roundStatementCurrency(Number(value ?? 0))
+  return roundStatementCurrency(value)
 }
 
 export function calculateStatementBalances({

@@ -5,6 +5,8 @@ import { useEffect } from "react"
 import useSWR, { mutate } from "swr"
 import { invalidateCacheByPrefix, invalidateCaches } from "@/lib/swr-cache"
 import { getMonthRange } from "@/lib/currency"
+import { getMonthBounds } from "@/lib/date-only"
+import { getTransactionActualAmount, getTransactionBudgetedAmount } from "@/lib/transaction-list-utils"
 import { useDashboard } from "./dashboard-context"
 import type {
   Transaction,
@@ -222,7 +224,7 @@ export function useCreditCards() {
 export function useCreditCardStatementTransactions(year: number, month: number) {
   const { data: visibility } = useFamilyVisibility()
   const visibilityScope = getVisibilityScope(visibility)
-  const endDate = new Date(year, month, 0).toISOString().split("T")[0]
+  const endDate = getMonthBounds(year, month).end
 
   const result = useSWR<Transaction[]>(
     visibilityScope ? ["credit-card-statement-transactions", year, month, visibilityScope] : null,
@@ -290,8 +292,7 @@ export function useMonthlyTransactions() {
   const { selectedMonth, selectedYear } = useDashboard()
   const { data: visibility } = useFamilyVisibility()
   const visibilityScope = getVisibilityScope(visibility)
-  const startDate = new Date(selectedYear, selectedMonth - 1, 1).toISOString().split("T")[0]
-  const endDate = new Date(selectedYear, selectedMonth, 0).toISOString().split("T")[0]
+  const { start: startDate, end: endDate } = getMonthBounds(selectedYear, selectedMonth)
   const key = visibilityScope ? ["transactions", selectedYear, selectedMonth, visibilityScope] : null
 
   const result = useSWR<Transaction[]>(
@@ -662,8 +663,8 @@ export function useMonthlySummary() {
 
   if (transactions) {
     transactions.forEach((t) => {
-      const actualAmount = t.status === "pending" || t.status === "rejected" ? 0 : Number(t.amount)
-      const budgetedAmount = t.status === "rejected" ? 0 : Number(t.budgeted_amount || t.amount)
+      const actualAmount = getTransactionActualAmount(t)
+      const budgetedAmount = getTransactionBudgetedAmount(t)
       if (t.type === "income") {
         summary.totalIncome += actualAmount
         summary.budgetedIncome += budgetedAmount
@@ -725,8 +726,8 @@ export function useGroupedTransactions() {
         }
       }
       grouped[key].items.push(t)
-      const amount = t.status === "pending" || t.status === "rejected" ? 0 : Number(t.amount)
-      const budgeted = t.status === "rejected" ? 0 : Number(t.budgeted_amount || t.amount)
+      const amount = getTransactionActualAmount(t)
+      const budgeted = getTransactionBudgetedAmount(t)
       if (t.type === "expense") {
         grouped[key].actual += amount
         grouped[key].budgeted += budgeted

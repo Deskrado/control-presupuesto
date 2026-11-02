@@ -32,6 +32,7 @@ import { getWealthBreakdown } from "@/lib/wealth-summary"
 import { canSeeModule } from "@/lib/family-visibility"
 import { applyMonthlyClosures, buildAnnualProjection } from "@/lib/projection-engine"
 import { getMonthCashBalances, getPreviousPeriod } from "@/lib/monthly-balance"
+import { getTransactionActualAmount, getTransactionBudgetedAmount } from "@/lib/transaction-list-utils"
 
 export default function DashboardPage() {
   const { selectedMonth, selectedYear } = useDashboard()
@@ -67,8 +68,8 @@ export default function DashboardPage() {
 
   if (monthlyTransactions) {
     monthlyTransactions.forEach((t) => {
-      const actualAmount = t.status === "pending" || t.status === "rejected" ? 0 : Number(t.amount)
-      const budgetedAmount = t.status === "rejected" ? 0 : Number(t.budgeted_amount || t.amount)
+      const actualAmount = getTransactionActualAmount(t)
+      const budgetedAmount = getTransactionBudgetedAmount(t)
       if (t.type === "expense") {
         const groupKey = t.group_id || "ungrouped"
         if (!expensesByGroup[groupKey]) {

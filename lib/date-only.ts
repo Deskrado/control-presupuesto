@@ -31,6 +31,11 @@ export function toDateOnly(year: number, month: number, day: number) {
   return `${year}-${String(month).padStart(2, "0")}-${String(clampDayOfMonth(year, month, day)).padStart(2, "0")}`
 }
 
+/** Local calendar date of a Date (or now). Never use toISOString().slice for business dates. */
+export function toLocalDateOnly(date: Date = new Date()) {
+  return toDateOnly(date.getFullYear(), date.getMonth() + 1, date.getDate())
+}
+
 export function getMonthBounds(year: number, month: number) {
   return { start: toDateOnly(year, month, 1), end: toDateOnly(year, month, 31) }
 }

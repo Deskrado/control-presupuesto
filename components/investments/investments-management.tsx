@@ -13,6 +13,7 @@ import {
   useUserSettings,
 } from "@/components/dashboard/use-dashboard-data"
 import { formatCurrency } from "@/lib/currency"
+import { toLocalDateOnly } from "@/lib/date-only"
 import type { BrokerConnection, BrokerPosition, Currency, FxQuote, Investment, SavingsGoal } from "@/lib/types"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -82,7 +83,7 @@ const emptyForm: InvestmentForm = {
   initial_amount: "",
   current_value: "",
   currency_id: "",
-  start_date: new Date().toISOString().split("T")[0],
+  start_date: toLocalDateOnly(),
   end_date: "",
   interest_rate: "",
   notes: "",
@@ -406,7 +407,7 @@ export function InvestmentsManagement() {
       const supabase = createClient()
       const { error: updateError } = await supabase
         .from("investments")
-        .update({ is_active: false, end_date: closingInvestment.end_date || new Date().toISOString().split("T")[0] })
+        .update({ is_active: false, end_date: closingInvestment.end_date || toLocalDateOnly() })
         .eq("id", closingInvestment.id)
       if (updateError) {
         setError(updateError.message)

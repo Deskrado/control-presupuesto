@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest"
 import {
   getTransactionActualAmount,
+  getTransactionBudgetedAmount,
+  getTransactionDisplayAmount,
   getTransactionRecurrenceKind,
   matchesTransactionSearch,
   parseLocalizedAmount,
@@ -18,20 +20,32 @@ describe("transaction list helpers", () => {
   })
 
   it("searches text only in the description", () => {
-    const transaction = { description: "Gastos varios", amount: 9000, status: "approved" as const }
+    const transaction = { description: "Gastos varios", amount: 9000, budgeted_amount: 9000, status: "approved" as const }
 
     expect(matchesTransactionSearch(transaction, "varios")).toBe(true)
     expect(matchesTransactionSearch(transaction, "compras")).toBe(false)
   })
 
-  it("searches numeric queries by the displayed real amount", () => {
-    const approved = { description: "Compra", amount: 9000, status: "approved" as const }
-    const pending = { description: "Compra", amount: 9000, status: "pending" as const }
+  it("usa budgeted para pending en display y búsqueda", () => {
+    const pending = {
+      description: "Cuota tarjeta",
+      amount: 1,
+      budgeted_amount: 40133.33,
+      status: "pending" as const,
+    }
+
+    expect(getTransactionActualAmount(pending)).toBe(0)
+    expect(getTransactionBudgetedAmount(pending)).toBe(40133.33)
+    expect(getTransactionDisplayAmount(pending)).toBe(40133.33)
+    expect(matchesTransactionSearch(pending, "40133,33")).toBe(true)
+    expect(matchesTransactionSearch(pending, "1")).toBe(false)
+  })
+
+  it("searches numeric queries by the displayed real amount when approved", () => {
+    const approved = { description: "Compra", amount: 9000, budgeted_amount: 9000, status: "approved" as const }
 
     expect(matchesTransactionSearch(approved, "9.000")).toBe(true)
-    expect(matchesTransactionSearch(pending, "9.000")).toBe(false)
-    expect(matchesTransactionSearch(pending, "0")).toBe(true)
-    expect(getTransactionActualAmount(pending)).toBe(0)
+    expect(getTransactionActualAmount(approved)).toBe(9000)
   })
 
   it("separates automatic card debits from recurring expenses", () => {
