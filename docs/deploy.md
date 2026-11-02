@@ -44,3 +44,4 @@ RUN_DB_MIGRATE=1 pnpm build
 - Migraciones no idempotentes o destructivas siguen siendo peligrosas: el gate solo limita *cuándo* corren, no audita el SQL.
 - Si Preview comparte la misma URL de Postgres, no marques esas vars para Preview.
 - El CLI de Supabase se resuelve con `npx -y supabase` en el build; un outage de npm puede fallar el migrate.
+- `supabase-migrate.mjs` pasa `--yes` (CI no es TTY) y usa `--remote=<url>` / `--remote` (CLI 3.x; reemplaza `--db-url` / `--linked`).
