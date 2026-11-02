@@ -13,11 +13,32 @@ export const FAMILY_MODULES = [
 
 export const ALL_FAMILY_MODULE_IDS = FAMILY_MODULES.map((module) => module.id)
 
+export function isFamilyManager(membership: FamilyMember | null | undefined) {
+  return Boolean(membership && ["owner", "admin"].includes(membership.role))
+}
+
 export function canApplyFamilyRestrictions(
   membership: FamilyMember | null | undefined,
   permissions: FamilyMemberPermissions | null | undefined,
 ) {
-  return Boolean(membership && permissions && membership.role !== "owner")
+  // Owners/admins manage household visibility; never apply self-restrictions in UI.
+  return Boolean(membership && permissions && !isFamilyManager(membership))
+}
+
+/**
+ * Hydrate the settings "categorías visibles" editor from the raw permissions row.
+ * Do NOT use isCategoryVisibleForMember here: masked categories are hidden from
+ * restricted members at read time, but the editor must still show their toggle
+ * state from visible_category_ids or saves silently drop/reset those ids.
+ */
+export function visibleCategoryIdsForEditor(
+  savedIds: string[] | null | undefined,
+  categories: Array<Pick<Category, "id">> | null | undefined,
+): string[] | null {
+  if (!Array.isArray(savedIds)) return savedIds ?? null
+  const knownIds = new Set((categories || []).map((category) => category.id))
+  if (knownIds.size === 0) return savedIds
+  return savedIds.filter((id) => knownIds.has(id))
 }
 
 export function canSeeModule(
