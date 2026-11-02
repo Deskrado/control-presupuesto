@@ -1,7 +1,7 @@
 import type { Transaction } from "@/lib/types"
 
-type TransactionAmountData = Pick<Transaction, "amount" | "status">
-type TransactionSearchData = Pick<Transaction, "description" | "amount" | "status">
+type TransactionAmountData = Pick<Transaction, "amount" | "budgeted_amount" | "status">
+type TransactionSearchData = Pick<Transaction, "description" | "amount" | "budgeted_amount" | "status">
 type TransactionRecurrenceData = Pick<Transaction, "type" | "is_recurring" | "payment_method" | "credit_card_id">
 
 export type TransactionRecurrenceKind = "normal" | "recurring" | "automatic_debit"
@@ -16,9 +16,27 @@ export function getTransactionRecurrenceKind(transaction: TransactionRecurrenceD
     : "recurring"
 }
 
+/** Cash-realized amount. Pending/rejected never reduce cash until approved. */
 export function getTransactionActualAmount(transaction: TransactionAmountData) {
   const status = transaction.status || "approved"
-  return status === "pending" || status === "rejected" ? 0 : Number(transaction.amount)
+  return status === "pending" || status === "rejected" ? 0 : Number(transaction.amount || 0)
+}
+
+/** Expected/previsto amount. Pending uses budgeted_amount when present. */
+export function getTransactionBudgetedAmount(transaction: TransactionAmountData) {
+  const status = transaction.status || "approved"
+  if (status === "rejected") return 0
+  return Number(transaction.budgeted_amount ?? transaction.amount ?? 0)
+}
+
+/**
+ * Primary UI amount: show expected debt for pending rows, realized cash otherwise.
+ * Aligns mobile/search with statements (`budgeted` while unpaid).
+ */
+export function getTransactionDisplayAmount(transaction: TransactionAmountData) {
+  const status = transaction.status || "approved"
+  if (status === "pending") return getTransactionBudgetedAmount(transaction)
+  return getTransactionActualAmount(transaction)
 }
 
 export function parseLocalizedAmount(value: string) {
@@ -60,7 +78,10 @@ export function matchesTransactionSearch(transaction: TransactionSearchData, sea
 
   const searchedAmount = parseLocalizedAmount(query)
   if (searchedAmount !== null) {
-    return Math.abs(getTransactionActualAmount(transaction) - searchedAmount) < 0.005
+    const actual = getTransactionActualAmount(transaction)
+    const budgeted = getTransactionBudgetedAmount(transaction)
+    const display = getTransactionDisplayAmount(transaction)
+    return [actual, budgeted, display].some((candidate) => Math.abs(candidate - searchedAmount) < 0.005)
   }
 
   return transaction.description.toLocaleLowerCase("es").includes(query.toLocaleLowerCase("es"))

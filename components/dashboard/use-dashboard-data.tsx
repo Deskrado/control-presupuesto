@@ -6,6 +6,7 @@ import useSWR, { mutate } from "swr"
 import { invalidateCacheByPrefix, invalidateCaches } from "@/lib/swr-cache"
 import { getMonthRange } from "@/lib/currency"
 import { getMonthBounds } from "@/lib/date-only"
+import { getTransactionActualAmount, getTransactionBudgetedAmount } from "@/lib/transaction-list-utils"
 import { useDashboard } from "./dashboard-context"
 import type {
   Transaction,
@@ -662,8 +663,8 @@ export function useMonthlySummary() {
 
   if (transactions) {
     transactions.forEach((t) => {
-      const actualAmount = t.status === "pending" || t.status === "rejected" ? 0 : Number(t.amount)
-      const budgetedAmount = t.status === "rejected" ? 0 : Number(t.budgeted_amount || t.amount)
+      const actualAmount = getTransactionActualAmount(t)
+      const budgetedAmount = getTransactionBudgetedAmount(t)
       if (t.type === "income") {
         summary.totalIncome += actualAmount
         summary.budgetedIncome += budgetedAmount
@@ -725,8 +726,8 @@ export function useGroupedTransactions() {
         }
       }
       grouped[key].items.push(t)
-      const amount = t.status === "pending" || t.status === "rejected" ? 0 : Number(t.amount)
-      const budgeted = t.status === "rejected" ? 0 : Number(t.budgeted_amount || t.amount)
+      const amount = getTransactionActualAmount(t)
+      const budgeted = getTransactionBudgetedAmount(t)
       if (t.type === "expense") {
         grouped[key].actual += amount
         grouped[key].budgeted += budgeted

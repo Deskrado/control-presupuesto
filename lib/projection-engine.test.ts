@@ -196,6 +196,98 @@ describe("buildAnnualProjection", () => {
     expect(result[1].cumulativeSavings).toBe(300)
   })
 
+  it("en el mes actual no cuenta pendientes en gastos/ahorro (alineado al dashboard)", () => {
+    const [august] = buildAnnualProjection({
+      year: 2026,
+      selectedMonth: 8,
+      asOfYear: 2026,
+      asOfMonth: 8,
+      startYear: 2026,
+      startMonth: 8,
+      monthsAhead: 1,
+      transactions: [
+        transaction({
+          id: "paid-cash",
+          amount: 100,
+          transaction_date: "2026-08-05",
+          payment_method: "cash",
+          status: "approved",
+        }),
+        transaction({
+          id: "pending-card",
+          amount: 1,
+          budgeted_amount: 500,
+          transaction_date: "2026-08-13",
+          payment_method: "credit",
+          credit_card_purchase_id: "purchase-1",
+          installment_number: 1,
+          status: "pending",
+        }),
+        transaction({
+          id: "income",
+          amount: 1000,
+          transaction_date: "2026-08-01",
+          type: "income",
+          status: "approved",
+        }),
+      ],
+    })
+
+    expect(august.periodType).toBe("current")
+    expect(august.expenses).toBe(100)
+    expect(august.actualExpenses).toBe(100)
+    expect(august.installments).toBe(0)
+    expect(august.income).toBe(1000)
+    expect(august.savings).toBe(900)
+  })
+
+  it("excluye pendientes del promedio histórico de proyección", () => {
+    const [october] = buildAnnualProjection({
+      year: 2026,
+      selectedMonth: 8,
+      asOfYear: 2026,
+      asOfMonth: 8,
+      startYear: 2026,
+      startMonth: 10,
+      monthsAhead: 1,
+      categories: [{
+        id: "cat-avg",
+        user_id: "user-id",
+        name: "Promedio",
+        type: "expense",
+        color: "#666666",
+        icon: null,
+        group_id: null,
+        parent_id: null,
+        is_active: true,
+        projection_method: "historical_average",
+        projection_months: 3,
+        created_at: "2026-01-01T00:00:00.000Z",
+      }],
+      transactions: [
+        transaction({
+          id: "approved-hist",
+          amount: 300,
+          category_id: "cat-avg",
+          transaction_date: "2026-07-10",
+          status: "approved",
+        }),
+        transaction({
+          id: "pending-hist",
+          amount: 9000,
+          budgeted_amount: 9000,
+          category_id: "cat-avg",
+          transaction_date: "2026-06-10",
+          status: "pending",
+        }),
+      ],
+    })
+
+    expect(october.periodType).toBe("projected")
+    expect(october.essentialProjection).toBe(300)
+    expect(october.expenses).toBe(300)
+  })
+
   it("mantiene el mes actual en vivo y usa cierres para el saldo arrastrado", () => {
     const points = buildAnnualProjection({
       year: 2026,

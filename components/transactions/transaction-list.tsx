@@ -69,6 +69,8 @@ import { Label } from "@/components/ui/label"
 import { cn } from "@/lib/utils"
 import {
   getTransactionActualAmount,
+  getTransactionBudgetedAmount,
+  getTransactionDisplayAmount,
   getTransactionRecurrenceKind,
   matchesTransactionSearch,
 } from "@/lib/transaction-list-utils"
@@ -451,7 +453,7 @@ export function TransactionList({ transactions, type, isLoading }: TransactionLi
                 {filteredTransactions.map((transaction) => {
                   const status = transaction.status || "approved"
                   const currency = transaction.currency || null
-                  const amount = Number(transaction.amount || 0)
+                  const amount = getTransactionDisplayAmount(transaction)
 
                   return (
                     <div key={transaction.id} className="rounded-md border p-3">
@@ -542,7 +544,7 @@ export function TransactionList({ transactions, type, isLoading }: TransactionLi
                 </TableHeader>
                 <TableBody>
                   {filteredTransactions.map((transaction) => {
-                    const budgeted = Number(transaction.budgeted_amount || transaction.amount)
+                    const budgeted = getTransactionBudgetedAmount(transaction)
                     const status = transaction.status || "approved"
                     const actual = getTransactionActualAmount(transaction)
                     const difference = actual - budgeted

@@ -1,5 +1,6 @@
 import type { RecurringIncomeTemplate, Transaction } from "@/lib/types"
 import { getMonthIndexFromDateOnly, getYearFromDateOnly } from "@/lib/date-only"
+import { getTransactionBudgetedAmount } from "@/lib/transaction-list-utils"
 
 type RecurringProjection = {
   income: number
@@ -88,7 +89,9 @@ export function getRecurringProjectionForMonth(
     if (actualRecurringKeys.has(key)) continue
     if (!transaction.is_recurring) continue
 
-    const amount = Number(transaction.amount || 0)
+    // Forward recurring templates with the expected/budgeted amount (pending rows
+    // often keep a placeholder `amount` until statement payment approval).
+    const amount = getTransactionBudgetedAmount(transaction)
     if (transaction.type === "income") {
       projection.income += amount
     } else {
