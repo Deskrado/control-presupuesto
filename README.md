@@ -8,6 +8,12 @@ This repository is linked to a [v0](https://v0.app project You can continue deve
 
 [Continue working on v0 →](https://v0.app/chat/projects/prj_hT90cbSrSw0N366nS24ThvOShBTq)
 
+## Deploy / database migrations
+
+Production deploys (Vercel on merge to `main`) run `pnpm db:migrate` during `build` only when `VERCEL_ENV=production`, then `next build`. Preview and local builds skip migrations.
+
+Required on **Vercel → Production** env: `POSTGRES_URL_NON_POOLING` (preferred) or `POSTGRES_URL`. Details: [docs/deploy.md](docs/deploy.md).
+
 ## Getting Started
 
 First, run the development server:
