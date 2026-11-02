@@ -33,6 +33,12 @@ function run(args) {
   process.exit(result.status ?? 1)
 }
 
+/** Remote target for CLI 3.x: --remote=<url> or --remote (linked). Always --yes for CI/Vercel. */
+function remotePushArgs(extra = []) {
+  const target = dbUrl ? [`--remote=${dbUrl}`] : ["--remote"]
+  return ["db", "push", ...target, "--yes", ...extra]
+}
+
 loadEnv()
 
 const mode = process.argv[2] || "push"
@@ -44,19 +50,20 @@ if (mode === "new") {
 }
 
 if (mode === "reset") {
-  run(["db", "reset", "--local"])
+  run(["db", "reset", "--local", "--yes"])
 }
 
 if (mode === "local") {
-  run(["db", "push", "--local"])
+  // Local is the default target in CLI 3.x
+  run(["db", "push", "--yes"])
 }
 
 if (mode === "dry-run") {
-  run(dbUrl ? ["db", "push", "--db-url", dbUrl, "--dry-run"] : ["db", "push", "--linked", "--dry-run"])
+  run(remotePushArgs(["--dry-run"]))
 }
 
 if (mode === "push") {
-  run(dbUrl ? ["db", "push", "--db-url", dbUrl] : ["db", "push", "--linked"])
+  run(remotePushArgs())
 }
 
 console.error(`Modo no reconocido: ${mode}`)
