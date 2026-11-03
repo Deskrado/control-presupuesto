@@ -72,10 +72,10 @@ describe("family visibility (server-aligned)", () => {
     expect(canSeeModule("settings", admin, permissions)).toBe(true)
   })
 
-  it("hides invisible and masked categories", () => {
+  it("hides only categories outside visible_category_ids (masks do not hide)", () => {
     expect(isCategoryVisibleForMember({ id: "cat-visible", created_at: "2026-01-01T00:00:00Z" }, permissions)).toBe(true)
     expect(isCategoryVisibleForMember({ id: "cat-hidden", created_at: "2026-01-01T00:00:00Z" }, permissions)).toBe(false)
-    expect(isCategoryVisibleForMember({ id: "cat-masked", created_at: "2026-01-01T00:00:00Z" }, permissions)).toBe(false)
+    expect(isCategoryVisibleForMember({ id: "cat-masked", created_at: "2026-01-01T00:00:00Z" }, permissions)).toBe(true)
   })
 
   it("preserves masked ids when hydrating the settings visibility editor", () => {
@@ -93,18 +93,24 @@ describe("family visibility (server-aligned)", () => {
     expect(visibleCategoryIdsForEditor(["cat-visible", "cat-gone"], categories)).toEqual(["cat-visible"])
   })
 
-  it("filters transactions for restricted members", () => {
+  it("filters hidden categories and substitutes masked amounts for visible ones", () => {
     const rows = applyTransactionVisibility(
       [
-        tx({ id: "1", category_id: "cat-visible", amount: 100 }),
-        tx({ id: "2", category_id: "cat-hidden", amount: 200 }),
-        tx({ id: "3", category_id: "cat-masked", amount: 300 }),
-        tx({ id: "4", category_id: null, amount: 50 }),
+        tx({ id: "1", category_id: "cat-visible", amount: 100, budgeted_amount: 100 }),
+        tx({ id: "2", category_id: "cat-hidden", amount: 200, budgeted_amount: 200 }),
+        tx({ id: "3", category_id: "cat-masked", amount: 300, budgeted_amount: 300 }),
+        tx({ id: "4", category_id: null, amount: 50, budgeted_amount: 50 }),
       ],
       member,
       permissions,
     )
 
-    expect(rows.map((row) => row.id)).toEqual(["1", "4"])
+    expect(rows.map((row) => row.id)).toEqual(["1", "3", "4"])
+    expect(rows.find((row) => row.id === "3")).toMatchObject({
+      amount: 10,
+      budgeted_amount: 10,
+      metadata: { visibility_masked: true },
+    })
+    expect(rows.find((row) => row.id === "1")?.amount).toBe(100)
   })
 })
