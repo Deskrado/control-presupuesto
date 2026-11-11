@@ -110,7 +110,11 @@ export function RecurringExpenseManagement({ scope = "non_card" }: RecurringExpe
     setIsLoading(true)
     setError(null)
     try {
-      const payload = await fetchJson("/api/recurring-expenses/bulk")
+      const params = new URLSearchParams({
+        month: String(selectedMonth),
+        year: String(selectedYear),
+      })
+      const payload = await fetchJson(`/api/recurring-expenses/bulk?${params}`)
       const allSeries = (payload.series || []) as RecurringExpenseSeriesSummary[]
       setSeries(scope === "non_card" ? allSeries.filter((item) => !item.isAutomaticDebit) : allSeries)
       setSelectedIds(new Set())
@@ -123,7 +127,7 @@ export function RecurringExpenseManagement({ scope = "non_card" }: RecurringExpe
 
   useEffect(() => {
     loadSeries()
-  }, [scope])
+  }, [scope, selectedMonth, selectedYear])
 
   const selectedSeries = useMemo(
     () => series.filter((item) => selectedIds.has(item.seriesId)),
@@ -247,7 +251,7 @@ export function RecurringExpenseManagement({ scope = "non_card" }: RecurringExpe
         }),
       })
       setMessage(
-        `Series cortadas: ${payload.preview?.length || 0}. Pendientes/futuros archivados desde ${periodLabel}: ${payload.archived || 0}.`,
+        `Series cortadas y ocultas de activas: ${payload.preview?.length || 0}. Pendientes/futuros archivados desde ${periodLabel}: ${payload.archived || 0}.`,
       )
       setDisableOpen(false)
       setConfirmForwardDelete(false)
@@ -488,7 +492,7 @@ export function RecurringExpenseManagement({ scope = "non_card" }: RecurringExpe
                   Alcance desde <span className="font-medium text-foreground">{periodLabel}</span> (mes del dashboard):
                 </p>
                 <ul className="list-disc space-y-1 pl-5">
-                  <li>Se cortan las series seleccionadas: no se volverán a materializar meses futuros.</li>
+                  <li>Se cortan las series seleccionadas: salen del listado de activas y no se materializan meses futuros.</li>
                   <li>Se archivan los movimientos <span className="font-medium text-foreground">pendientes</span> de {periodLabel} en adelante ({pendingToArchive} en total).</li>
                   <li>Los movimientos <span className="font-medium text-foreground">aprobados</span> históricos se conservan.</li>
                 </ul>
@@ -500,7 +504,9 @@ export function RecurringExpenseManagement({ scope = "non_card" }: RecurringExpe
               <div key={item.seriesId} className="rounded-md border p-3">
                 <div className="font-medium">{item.description}</div>
                 <div className="text-muted-foreground">
-                  Archiva {item.pendingArchived} pendientes/futuros · conserva {item.remainingActive} históricos · fin de serie {item.endDate}
+                  {item.pendingArchived === 0
+                    ? `0 pendientes/futuros · corta/oculta la serie (fin ${item.endDate}) · conserva ${item.remainingActive} históricos`
+                    : `Archiva ${item.pendingArchived} pendientes/futuros · conserva ${item.remainingActive} históricos · fin de serie ${item.endDate}`}
                 </div>
               </div>
             ))}
@@ -512,7 +518,8 @@ export function RecurringExpenseManagement({ scope = "non_card" }: RecurringExpe
               className="mt-0.5"
             />
             <span>
-              Confirmo cortar estas series y archivar pendientes/futuros desde {periodLabel}.
+              Confirmo cortar estas series desde {periodLabel}
+              {pendingToArchive > 0 ? " y archivar pendientes/futuros" : " (aunque no haya pendientes)"}.
             </span>
           </label>
           <DialogFooter>

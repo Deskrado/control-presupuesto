@@ -129,6 +129,12 @@ export function getRecurringExpenseEndDate(transaction: RecurringExpenseOccurren
   return typeof value === "string" && value ? value : null
 }
 
+/** True when the series still belongs in active management for `asOfPeriod` (YYYY-MM-01). */
+export function isRecurringExpenseSeriesActiveAsOf(endDate: string | null, asOfPeriod: string) {
+  if (!endDate) return true
+  return endDate >= monthStart(asOfPeriod)
+}
+
 export function getRecurringExpenseTemplateAmount(transaction: RecurringExpenseOccurrence) {
   return Number(transaction.budgeted_amount ?? transaction.amount ?? 0)
 }
@@ -179,14 +185,20 @@ function sortByPeriodDesc(a: RecurringExpenseOccurrence, b: RecurringExpenseOccu
 
 export function summarizeRecurringExpenseSeries(
   rows: RecurringExpenseOccurrence[],
+  asOfPeriod?: string,
 ): RecurringExpenseSeriesSummary[] {
   const summaries: RecurringExpenseSeriesSummary[] = []
+  const asOf = asOfPeriod ? monthStart(asOfPeriod) : null
 
   for (const [seriesId, seriesRows] of groupRecurringExpenseSeries(rows)) {
     const activeRows = seriesRows.filter(isActiveOccurrence).sort(sortByPeriodDesc)
     if (activeRows.length === 0) continue
 
     const seed = activeRows[0]
+    const endDate = getRecurringExpenseEndDate(seed)
+    // Ended series keep historical rows, but must not stay in active management.
+    if (asOf && !isRecurringExpenseSeriesActiveAsOf(endDate, asOf)) continue
+
     const pendingCount = activeRows.filter((row) => (row.status || "approved") === "pending").length
     const approvedCount = activeRows.filter((row) => (row.status || "approved") === "approved").length
 
@@ -201,7 +213,7 @@ export function summarizeRecurringExpenseSeries(
       groupId: seed.group_id,
       isAutomaticDebit: seed.payment_method === "credit" && Boolean(seed.credit_card_id),
       latestPeriod: getRecurringExpensePeriod(seed),
-      endDate: getRecurringExpenseEndDate(seed),
+      endDate,
       pendingCount,
       approvedCount,
       activeCount: activeRows.length,
@@ -322,6 +334,8 @@ export function planRecurringExpenseAmountUpdate(params: {
  * Disable/delete selected series from `effectivePeriod` forward:
  * - archive pending materializations in/after that period (tombstones)
  * - set recurrence_end_date on remaining active rows so generation/projection stop
+ * - even when there are 0 pendientes (series already ended before `effectivePeriod`),
+ *   still stamp end date / bulk_disabled so the series leaves active management
  */
 export function planRecurringExpenseSeriesDisable(params: {
   rows: RecurringExpenseOccurrence[]
@@ -356,6 +370,7 @@ export function planRecurringExpenseSeriesDisable(params: {
 
       remainingActive += 1
       const currentEnd = getRecurringExpenseEndDate(row)
+      // Never extend an earlier end; always cut at/before the period before effectivePeriod.
       const nextEnd = !currentEnd || currentEnd > endDate ? endDate : currentEnd
       endDateUpdates.push({
         id: row.id,

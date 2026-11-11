@@ -76,6 +76,24 @@ describe("summarizeRecurringExpenseSeries", () => {
       seedId: "nov",
     })
   })
+
+  it("oculta series ya terminadas respecto del período activo de gestión", () => {
+    const rows = [
+      occurrence({
+        id: "oct",
+        description: "Cuota Alimenticia",
+        recurrence_period: "2026-10-01",
+        status: "approved",
+        metadata: {
+          recurring_series_id: "11111111-1111-4111-a111-111111111111",
+          recurrence_end_date: "2026-10-31",
+        },
+      }),
+    ]
+
+    expect(summarizeRecurringExpenseSeries(rows, "2026-10-01")).toHaveLength(1)
+    expect(summarizeRecurringExpenseSeries(rows, "2026-11-01")).toHaveLength(0)
+  })
 })
 
 describe("planRecurringExpenseAmountUpdate", () => {
@@ -218,6 +236,54 @@ describe("planRecurringExpenseSeriesDisable", () => {
       remainingActive: 1,
       endDate: "2026-10-31",
     })
+  })
+
+  it("con 0 pendientes aún corta la serie ya terminada para sacarla de activas", () => {
+    const rows = [
+      occurrence({
+        id: "oct",
+        description: "Cuota Alimenticia",
+        recurrence_period: "2026-10-01",
+        status: "approved",
+        metadata: {
+          recurring_series_id: "11111111-1111-4111-a111-111111111111",
+          recurrence_end_date: "2026-10-31",
+        },
+      }),
+    ]
+
+    const plan = planRecurringExpenseSeriesDisable({
+      rows,
+      seriesIds: ["11111111-1111-4111-a111-111111111111"],
+      effectivePeriod: "2026-11-01",
+    })
+
+    expect(plan.archiveIds).toEqual([])
+    expect(plan.preview[0]).toMatchObject({
+      pendingArchived: 0,
+      remainingActive: 1,
+      endDate: "2026-10-31",
+    })
+    expect(plan.endDateUpdates).toHaveLength(1)
+    expect(plan.endDateUpdates[0]).toMatchObject({
+      id: "oct",
+      payload: {
+        metadata: expect.objectContaining({
+          recurrence_end_date: "2026-10-31",
+          bulk_disabled_from_period: "2026-11-01",
+        }),
+      },
+    })
+
+    const afterDisable = rows.map((row) =>
+      row.id === "oct"
+        ? {
+            ...row,
+            metadata: plan.endDateUpdates[0].payload.metadata,
+          }
+        : row,
+    )
+    expect(summarizeRecurringExpenseSeries(afterDisable, "2026-11-01")).toHaveLength(0)
   })
 })
 

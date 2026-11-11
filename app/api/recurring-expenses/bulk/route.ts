@@ -110,33 +110,40 @@ function resolveSeriesIds(
   return resolved.size > 0 ? Array.from(resolved) : null
 }
 
-function parseEffectivePeriod(body: Record<string, unknown>) {
+function parseEffectivePeriod(source: Record<string, unknown>) {
   const today = new Date()
-  const month = Number(body.month || today.getMonth() + 1)
-  const year = Number(body.year || today.getFullYear())
+  const month = Number(source.month || today.getMonth() + 1)
+  const year = Number(source.year || today.getFullYear())
   if (month < 1 || month > 12 || year < 2000 || year > 2100) {
     throw new Error("Periodo inválido")
   }
   return toDateOnly(year, month, 1)
 }
 
-export async function GET() {
+export async function GET(request: NextRequest) {
   try {
     const supabase = await createClient()
     const { data: { user } } = await supabase.auth.getUser()
     if (!user) return NextResponse.json({ error: "No autenticado" }, { status: 401 })
+
+    const { searchParams } = new URL(request.url)
+    const asOfPeriod = parseEffectivePeriod({
+      month: searchParams.get("month") || undefined,
+      year: searchParams.get("year") || undefined,
+    })
 
     const [{ membership, permissions }, rows] = await Promise.all([
       loadFamilyVisibility(supabase, user.id),
       loadRecurringExpenseRows(supabase),
     ])
     const series = applyRecurringExpenseSeriesVisibility(
-      summarizeRecurringExpenseSeries(rows),
+      summarizeRecurringExpenseSeries(rows, asOfPeriod),
       membership,
       permissions,
     )
     return NextResponse.json({
       ok: true,
+      asOfPeriod,
       series,
     })
   } catch (error) {
