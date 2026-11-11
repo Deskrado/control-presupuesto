@@ -45,6 +45,7 @@ export type RecurringExpenseSeriesSummary = {
 export type AmountUpdatePreviewItem = {
   seriesId: string
   description: string
+  categoryId: string | null
   fromAmount: number
   toAmount: number
   pendingUpdated: number
@@ -303,6 +304,7 @@ export function planRecurringExpenseAmountUpdate(params: {
     preview.push({
       seriesId,
       description: seed.description,
+      categoryId: seed.category_id,
       fromAmount,
       toAmount,
       pendingUpdated,

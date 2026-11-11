@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest"
 import {
+  applyRecurringExpenseAmountPreviewVisibility,
+  applyRecurringExpenseSeriesVisibility,
   applyTransactionVisibility,
   canApplyFamilyRestrictions,
   canSeeModule,
@@ -112,5 +114,69 @@ describe("family visibility (server-aligned)", () => {
       metadata: { visibility_masked: true },
     })
     expect(rows.find((row) => row.id === "1")?.amount).toBe(100)
+  })
+
+  it("masks recurring expense series amounts without hiding masked categories", () => {
+    const series = applyRecurringExpenseSeriesVisibility(
+      [
+        { seriesId: "s1", categoryId: "cat-visible", currentAmount: 100, description: "Visible" },
+        { seriesId: "s2", categoryId: "cat-hidden", currentAmount: 200, description: "Hidden" },
+        { seriesId: "s3", categoryId: "cat-masked", currentAmount: 250000, description: "Comisión Noelia" },
+      ],
+      member,
+      permissions,
+    )
+
+    expect(series.map((item) => item.seriesId)).toEqual(["s1", "s3"])
+    expect(series.find((item) => item.seriesId === "s3")).toMatchObject({
+      currentAmount: 10,
+    })
+    expect(series.find((item) => item.seriesId === "s1")?.currentAmount).toBe(100)
+  })
+
+  it("masks bulk amount-update preview from/to using the configured mask", () => {
+    const preview = applyRecurringExpenseAmountPreviewVisibility(
+      [
+        {
+          seriesId: "s3",
+          description: "Comisión Noelia",
+          categoryId: "cat-masked",
+          fromAmount: 250000,
+          toAmount: 275000,
+          pendingUpdated: 2,
+          seedBudgetedUpdated: true,
+        },
+        {
+          seriesId: "s1",
+          description: "Visible",
+          categoryId: "cat-visible",
+          fromAmount: 100,
+          toAmount: 110,
+          pendingUpdated: 1,
+          seedBudgetedUpdated: true,
+        },
+      ],
+      member,
+      permissions,
+      { mode: "percent", value: 10 },
+    )
+
+    expect(preview.find((item) => item.seriesId === "s3")).toMatchObject({
+      fromAmount: 10,
+      toAmount: 11,
+    })
+    expect(preview.find((item) => item.seriesId === "s1")).toMatchObject({
+      fromAmount: 100,
+      toAmount: 110,
+    })
+  })
+
+  it("does not mask recurring series amounts for owners/admins", () => {
+    const series = applyRecurringExpenseSeriesVisibility(
+      [{ seriesId: "s3", categoryId: "cat-masked", currentAmount: 250000, description: "Comisión Noelia" }],
+      owner,
+      permissions,
+    )
+    expect(series[0]?.currentAmount).toBe(250000)
   })
 })
