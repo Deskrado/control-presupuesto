@@ -28,16 +28,6 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog"
 import { Loader2, PencilLine, Trash2 } from "lucide-react"
 import { invalidateCacheByPrefix } from "@/lib/swr-cache"
 
@@ -92,6 +82,13 @@ export function RecurringExpenseManagement() {
 
   const [disableOpen, setDisableOpen] = useState(false)
   const [disablePreview, setDisablePreview] = useState<DisablePreviewItem[]>([])
+  const [confirmForwardDelete, setConfirmForwardDelete] = useState(false)
+
+  const periodLabel = `${String(selectedMonth).padStart(2, "0")}/${selectedYear}`
+  const pendingToArchive = useMemo(
+    () => disablePreview.reduce((sum, item) => sum + item.pendingArchived, 0),
+    [disablePreview],
+  )
 
   const defaultCurrency = settings?.default_currency || currencies?.find((currency) => currency.code === "ARS") || currencies?.[0]
   const currencyById = useMemo(() => {
@@ -215,6 +212,7 @@ export function RecurringExpenseManagement() {
         }),
       })
       setDisablePreview(payload.preview || [])
+      setConfirmForwardDelete(false)
       setDisableOpen(true)
     } catch (previewError) {
       setError(previewError instanceof Error ? previewError.message : "No se pudo preparar la confirmación")
@@ -224,6 +222,7 @@ export function RecurringExpenseManagement() {
   }
 
   const confirmDisable = async () => {
+    if (!confirmForwardDelete) return
     setIsSubmitting(true)
     setError(null)
     try {
@@ -237,13 +236,14 @@ export function RecurringExpenseManagement() {
         }),
       })
       setMessage(
-        `Series desactivadas: ${payload.preview?.length || 0}. Pendientes archivados: ${payload.archived || 0}.`,
+        `Series cortadas: ${payload.preview?.length || 0}. Pendientes/futuros archivados desde ${periodLabel}: ${payload.archived || 0}.`,
       )
       setDisableOpen(false)
+      setConfirmForwardDelete(false)
       invalidateCacheByPrefix("transactions")
       await loadSeries()
     } catch (disableError) {
-      setError(disableError instanceof Error ? disableError.message : "Error al desactivar recurrentes")
+      setError(disableError instanceof Error ? disableError.message : "Error al eliminar recurrentes")
     } finally {
       setIsSubmitting(false)
     }
@@ -284,9 +284,11 @@ export function RecurringExpenseManagement() {
         <CardHeader>
           <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
             <div>
-              <CardTitle>Gastos recurrentes</CardTitle>
+              <CardTitle>Gastos recurrentes y débitos automáticos</CardTitle>
               <p className="mt-1 text-sm text-muted-foreground">
-                Actualización y baja masiva por serie. Los cambios aplican desde {String(selectedMonth).padStart(2, "0")}/{selectedYear}.
+                Incluye débitos automáticos de tarjeta. Seleccioná series con los checkboxes y usá{" "}
+                <span className="font-medium text-foreground">Actualizar montos</span> o{" "}
+                <span className="font-medium text-foreground">Eliminar futuros</span>. El alcance usa el mes del dashboard ({periodLabel}).
               </p>
             </div>
             <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
@@ -333,7 +335,7 @@ export function RecurringExpenseManagement() {
                   disabled={selectedIds.size === 0 || isSubmitting}
                 >
                   <Trash2 className="mr-2 h-4 w-4" />
-                  Desactivar
+                  Eliminar futuros
                 </Button>
               </div>
             </div>
@@ -443,38 +445,71 @@ export function RecurringExpenseManagement() {
         </DialogContent>
       </Dialog>
 
-      <AlertDialog open={disableOpen} onOpenChange={setDisableOpen}>
-        <AlertDialogContent className="max-w-xl">
-          <AlertDialogHeader>
-            <AlertDialogTitle>Desactivar recurrentes seleccionados</AlertDialogTitle>
-            <AlertDialogDescription>
-              Se archivan los pendientes desde {String(selectedMonth).padStart(2, "0")}/{selectedYear} y se corta la serie
-              para que no vuelvan a materializarse. Los movimientos aprobados históricos se conservan.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <div className="max-h-64 space-y-2 overflow-y-auto text-sm">
+      <Dialog
+        open={disableOpen}
+        onOpenChange={(open) => {
+          setDisableOpen(open)
+          if (!open) setConfirmForwardDelete(false)
+        }}
+      >
+        <DialogContent className="max-w-xl">
+          <DialogHeader>
+            <DialogTitle>¿Eliminar pendientes y futuros de las series?</DialogTitle>
+            <DialogDescription asChild>
+              <div className="space-y-2 text-sm text-muted-foreground">
+                <p>
+                  Alcance desde <span className="font-medium text-foreground">{periodLabel}</span> (mes del dashboard):
+                </p>
+                <ul className="list-disc space-y-1 pl-5">
+                  <li>Se cortan las series seleccionadas: no se volverán a materializar meses futuros.</li>
+                  <li>Se archivan los movimientos <span className="font-medium text-foreground">pendientes</span> de {periodLabel} en adelante ({pendingToArchive} en total).</li>
+                  <li>Los movimientos <span className="font-medium text-foreground">aprobados</span> históricos se conservan.</li>
+                </ul>
+              </div>
+            </DialogDescription>
+          </DialogHeader>
+          <div className="max-h-56 space-y-2 overflow-y-auto text-sm">
             {disablePreview.map((item) => (
               <div key={item.seriesId} className="rounded-md border p-3">
                 <div className="font-medium">{item.description}</div>
                 <div className="text-muted-foreground">
-                  Archiva {item.pendingArchived} pendientes · deja {item.remainingActive} históricos · fin {item.endDate}
+                  Archiva {item.pendingArchived} pendientes/futuros · conserva {item.remainingActive} históricos · fin de serie {item.endDate}
                 </div>
               </div>
             ))}
           </div>
-          <AlertDialogFooter>
-            <AlertDialogCancel disabled={isSubmitting}>Cancelar</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={confirmDisable}
+          <label className="flex items-start gap-3 rounded-md border p-3 text-sm">
+            <Checkbox
+              checked={confirmForwardDelete}
+              onCheckedChange={(checked) => setConfirmForwardDelete(checked === true)}
+              className="mt-0.5"
+            />
+            <span>
+              Confirmo cortar estas series y archivar pendientes/futuros desde {periodLabel}.
+            </span>
+          </label>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setDisableOpen(false)
+                setConfirmForwardDelete(false)
+              }}
               disabled={isSubmitting}
-              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              Cancelar
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={confirmDisable}
+              disabled={isSubmitting || !confirmForwardDelete || disablePreview.length === 0}
             >
               {isSubmitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-              Desactivar series
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+              Eliminar futuros
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

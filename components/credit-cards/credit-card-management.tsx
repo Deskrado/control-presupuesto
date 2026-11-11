@@ -1,8 +1,8 @@
 "use client"
 
-import { useMemo, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import Link from "next/link"
-import { invalidateCaches } from "@/lib/swr-cache"
+import { invalidateCacheByPrefix, invalidateCaches } from "@/lib/swr-cache"
 import { createClient } from "@/lib/supabase/client"
 import { useDashboard } from "@/components/dashboard/dashboard-context"
 import {
@@ -29,6 +29,7 @@ import {
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { Checkbox } from "@/components/ui/checkbox"
 import {
   Dialog,
   DialogContent,
@@ -45,6 +46,7 @@ import {
 } from "@/components/ui/dropdown-menu"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group"
 import {
   Select,
   SelectContent,
@@ -61,7 +63,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
-import { CreditCard as CreditCardIcon, Loader2, MoreHorizontal, Pencil, Plus, Repeat, Search, XCircle } from "lucide-react"
+import { CreditCard as CreditCardIcon, Loader2, MoreHorizontal, Pencil, Plus, Repeat, Search, Trash2, XCircle } from "lucide-react"
 
 type CardFormState = {
   name: string
@@ -98,10 +100,17 @@ function cardToForm(card: CreditCard): CardFormState {
   }
 }
 
-function transactionStatementKey(transaction: Transaction) {
+function getAutomaticDebitSeriesId(transaction: Transaction) {
   const metadata = transaction.metadata || {}
-  const seriesId = transaction.recurring_series_id ||
-    (typeof metadata.recurring_series_id === "string" ? metadata.recurring_series_id : null)
+  if (transaction.recurring_series_id) return transaction.recurring_series_id
+  if (typeof metadata.recurring_series_id === "string" && metadata.recurring_series_id) {
+    return metadata.recurring_series_id
+  }
+  return null
+}
+
+function transactionStatementKey(transaction: Transaction) {
+  const seriesId = getAutomaticDebitSeriesId(transaction)
   if (seriesId) return `series:${seriesId}`
 
   return [
@@ -160,6 +169,14 @@ export function CreditCardManagement() {
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [consumptionCardFilter, setConsumptionCardFilter] = useState("all")
+  const [selectedDebitKeys, setSelectedDebitKeys] = useState<Set<string>>(new Set())
+  const [debitDeleteOpen, setDebitDeleteOpen] = useState(false)
+  const [debitDeleteTargets, setDebitDeleteTargets] = useState<Transaction[]>([])
+  const [debitDeleteScope, setDebitDeleteScope] = useState<"single" | "forward">("forward")
+  const [confirmForwardDebitDelete, setConfirmForwardDebitDelete] = useState(false)
+  const [isDeletingDebits, setIsDeletingDebits] = useState(false)
+  const [debitMessage, setDebitMessage] = useState<string | null>(null)
+  const [debitError, setDebitError] = useState<string | null>(null)
 
   const visibleCards = useMemo(() => {
     const query = search.toLowerCase()
@@ -230,6 +247,108 @@ export function CreditCardManagement() {
   const automaticDebitHref = `/dashboard/transacciones/nuevo?type=expense&payment=credit&recurring=1&back=/dashboard/tarjetas&redirect=/dashboard/tarjetas${
     consumptionCardFilter === "all" ? "" : `&cardId=${encodeURIComponent(consumptionCardFilter)}`
   }`
+  const debitPeriodLabel = `${String(statementMonth).padStart(2, "0")}/${statementYear}`
+  const allDebitsSelected = recurringCardDebits.length > 0 && selectedDebitKeys.size === recurringCardDebits.length
+
+  useEffect(() => {
+    setSelectedDebitKeys(new Set())
+  }, [consumptionCardFilter, statementMonth, statementYear])
+
+  const getDebitSelectionKey = (transaction: Transaction) =>
+    getAutomaticDebitSeriesId(transaction) || transaction.id
+
+  const toggleAllDebits = (checked: boolean) => {
+    setSelectedDebitKeys(checked ? new Set(recurringCardDebits.map(getDebitSelectionKey)) : new Set())
+  }
+
+  const toggleDebit = (transaction: Transaction, checked: boolean) => {
+    const key = getDebitSelectionKey(transaction)
+    setSelectedDebitKeys((current) => {
+      const next = new Set(current)
+      if (checked) next.add(key)
+      else next.delete(key)
+      return next
+    })
+  }
+
+  const openDebitDeleteDialog = (targets: Transaction[]) => {
+    if (targets.length === 0) return
+    setDebitMessage(null)
+    setDebitError(null)
+    setDebitDeleteTargets(targets)
+    setDebitDeleteScope("forward")
+    setConfirmForwardDebitDelete(false)
+    setDebitDeleteOpen(true)
+  }
+
+  const resetDebitDeleteState = () => {
+    setDebitDeleteOpen(false)
+    setDebitDeleteTargets([])
+    setDebitDeleteScope("forward")
+    setConfirmForwardDebitDelete(false)
+    setDebitError(null)
+  }
+
+  const confirmDebitDelete = async () => {
+    if (debitDeleteTargets.length === 0) return
+    if (debitDeleteScope === "forward" && !confirmForwardDebitDelete) return
+
+    setIsDeletingDebits(true)
+    setDebitError(null)
+    setDebitMessage(null)
+
+    try {
+      if (debitDeleteScope === "forward") {
+        const seriesIds = Array.from(new Set(
+          debitDeleteTargets
+            .map(getAutomaticDebitSeriesId)
+            .filter((value): value is string => Boolean(value)),
+        ))
+        const transactionIds = debitDeleteTargets.map((transaction) => transaction.id)
+
+        const response = await fetch("/api/recurring-expenses/bulk", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "disable",
+            seriesIds,
+            transactionIds,
+            month: statementMonth,
+            year: statementYear,
+          }),
+        })
+        const payload = await response.json().catch(() => ({}))
+        if (!response.ok) throw new Error(payload.error || "No se pudieron eliminar los débitos automáticos")
+
+        setDebitMessage(
+          `Débitos cortados: ${payload.preview?.length || transactionIds.length}. Pendientes/futuros archivados desde ${debitPeriodLabel}: ${payload.archived || 0}.`,
+        )
+        setSelectedDebitKeys(new Set())
+      } else {
+        const supabase = createClient()
+        const ids = debitDeleteTargets.map((transaction) => transaction.id)
+        const { error: archiveError } = await supabase
+          .from("transactions")
+          .update({ archived_at: new Date().toISOString() })
+          .in("id", ids)
+        if (archiveError) throw archiveError
+        setDebitMessage(
+          ids.length === 1
+            ? "Se archivó solo el débito de este período. La serie puede seguir generando futuros."
+            : `Se archivaron ${ids.length} débitos de este período. Las series pueden seguir generando futuros.`,
+        )
+        setSelectedDebitKeys(new Set())
+      }
+
+      invalidateCaches(["credit-card-statements", "credit-card-statement-transactions", "credit-card-purchases"])
+      invalidateCacheByPrefix("transactions")
+      resetDebitDeleteState()
+    } catch (deleteError) {
+      setDebitError(deleteError instanceof Error ? deleteError.message : "Error al eliminar débitos automáticos")
+    } finally {
+      setIsDeletingDebits(false)
+    }
+  }
 
   const openNewDialog = () => {
     setEditingCard(null)
@@ -818,21 +937,44 @@ export function CreditCardManagement() {
 
       <Card>
         <CardHeader>
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-            <CardTitle>Debitos automaticos activos</CardTitle>
-            <Select value={consumptionCardFilter} onValueChange={setConsumptionCardFilter}>
-              <SelectTrigger className="w-full sm:w-72">
-                <SelectValue placeholder="Filtrar por tarjeta" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">Todas las tarjetas</SelectItem>
-                {(cards || []).map((card) => (
-                  <SelectItem key={card.id} value={card.id} textValue={`${card.name} ${card.brand || ""} ${card.last_four || ""}`}>
-                    <CreditCardSelectLabel card={card} />
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+          <div className="flex flex-col gap-3">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <CardTitle>Débitos automáticos activos</CardTitle>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  Seleccioná uno o varios y usá Eliminar. Al borrar se pregunta si cortás la serie hacia adelante
+                  (pendientes/futuros desde {debitPeriodLabel}) o solo el movimiento de este período.
+                </p>
+              </div>
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                <Select value={consumptionCardFilter} onValueChange={setConsumptionCardFilter}>
+                  <SelectTrigger className="w-full sm:w-72">
+                    <SelectValue placeholder="Filtrar por tarjeta" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">Todas las tarjetas</SelectItem>
+                    {(cards || []).map((card) => (
+                      <SelectItem key={card.id} value={card.id} textValue={`${card.name} ${card.brand || ""} ${card.last_four || ""}`}>
+                        <CreditCardSelectLabel card={card} />
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <Button
+                  variant="destructive"
+                  disabled={selectedDebitKeys.size === 0 || isDeletingDebits}
+                  onClick={() =>
+                    openDebitDeleteDialog(
+                      recurringCardDebits.filter((transaction) => selectedDebitKeys.has(getDebitSelectionKey(transaction))),
+                    )
+                  }
+                >
+                  <Trash2 className="mr-2 h-4 w-4" />
+                  Eliminar ({selectedDebitKeys.size})
+                </Button>
+              </div>
+            </div>
+            {debitMessage && <div className="rounded-md border bg-muted p-3 text-sm">{debitMessage}</div>}
           </div>
         </CardHeader>
         <CardContent>
@@ -842,53 +984,86 @@ export function CreditCardManagement() {
             </div>
           ) : recurringCardDebits.length === 0 ? (
             <div className="py-8 text-center text-muted-foreground">
-              {consumptionCardFilter === "all" ? "No hay debitos automaticos activos" : "No hay debitos automaticos para esta tarjeta"}
+              {consumptionCardFilter === "all" ? "No hay débitos automáticos activos" : "No hay débitos automáticos para esta tarjeta"}
             </div>
           ) : (
             <>
               <div className="space-y-3 md:hidden">
-                {recurringCardDebits.map((transaction) => (
-                  <div key={transaction.id} className="rounded-md border p-3">
-                    <div className="flex items-start justify-between gap-3">
-                      <div className="min-w-0 flex-1">
-                        <p className="min-w-0 truncate font-medium">{transaction.description}</p>
-                        <p className="text-xs text-muted-foreground">
-                          {transaction.credit_card ? <CreditCardSelectLabel card={transaction.credit_card} /> : "-"}
-                          {transaction.category?.name ? ` · ${transaction.category.name}` : ""}
-                        </p>
+                <label className="flex items-center gap-2 text-sm">
+                  <Checkbox
+                    checked={allDebitsSelected}
+                    onCheckedChange={(checked) => toggleAllDebits(checked === true)}
+                    aria-label="Seleccionar todos los débitos"
+                  />
+                  Seleccionar todos
+                </label>
+                {recurringCardDebits.map((transaction) => {
+                  const selectionKey = getDebitSelectionKey(transaction)
+                  return (
+                    <div key={transaction.id} className="rounded-md border p-3">
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="flex min-w-0 flex-1 items-start gap-3">
+                          <Checkbox
+                            checked={selectedDebitKeys.has(selectionKey)}
+                            onCheckedChange={(checked) => toggleDebit(transaction, checked === true)}
+                            aria-label={`Seleccionar ${transaction.description}`}
+                            className="mt-1"
+                          />
+                          <div className="min-w-0 flex-1">
+                            <p className="min-w-0 truncate font-medium">{transaction.description}</p>
+                            <p className="text-xs text-muted-foreground">
+                              {transaction.credit_card ? <CreditCardSelectLabel card={transaction.credit_card} /> : "-"}
+                              {transaction.category?.name ? ` · ${transaction.category.name}` : ""}
+                            </p>
+                          </div>
+                        </div>
+                        <DropdownMenu>
+                          <DropdownMenuTrigger asChild>
+                            <Button variant="ghost" size="icon" aria-label="Más acciones de débito automático">
+                              <MoreHorizontal className="h-4 w-4" />
+                            </Button>
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent align="end">
+                            <DropdownMenuItem asChild>
+                              <Link href={`/dashboard/transacciones/${transaction.id}`}>
+                                <Pencil className="mr-2 h-4 w-4" />
+                                Editar
+                              </Link>
+                            </DropdownMenuItem>
+                            <DropdownMenuItem
+                              className="text-destructive"
+                              onClick={() => openDebitDeleteDialog([transaction])}
+                            >
+                              <Trash2 className="mr-2 h-4 w-4" />
+                              Eliminar
+                            </DropdownMenuItem>
+                          </DropdownMenuContent>
+                        </DropdownMenu>
                       </div>
-                      <DropdownMenu>
-                        <DropdownMenuTrigger asChild>
-                          <Button variant="ghost" size="icon" aria-label="Más acciones de consumo">
-                            <MoreHorizontal className="h-4 w-4" />
-                          </Button>
-                        </DropdownMenuTrigger>
-                        <DropdownMenuContent align="end">
-                          <DropdownMenuItem asChild>
-                            <Link href={`/dashboard/transacciones/${transaction.id}`}>
-                              <Pencil className="mr-2 h-4 w-4" />
-                              Editar
-                            </Link>
-                          </DropdownMenuItem>
-                        </DropdownMenuContent>
-                      </DropdownMenu>
+                      <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
+                        <Badge variant={transaction.status === "pending" ? "outline" : "secondary"}>
+                          {transaction.status === "pending" ? "Pendiente" : "Activo"}
+                        </Badge>
+                        <span className="font-mono text-sm">
+                          {formatCurrency(Number(transaction.budgeted_amount || transaction.amount || 0), transaction.currency)}
+                        </span>
+                      </div>
                     </div>
-                    <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
-                      <Badge variant={transaction.status === "pending" ? "outline" : "secondary"}>
-                        {transaction.status === "pending" ? "Pendiente" : "Activo"}
-                      </Badge>
-                      <span className="font-mono text-sm">
-                        {formatCurrency(Number(transaction.budgeted_amount || transaction.amount || 0), transaction.currency)}
-                      </span>
-                    </div>
-                  </div>
-                ))}
+                  )
+                })}
               </div>
 
               <div className="hidden overflow-x-auto md:block">
                 <Table>
                   <TableHeader>
                     <TableRow>
+                      <TableHead className="w-10">
+                        <Checkbox
+                          checked={allDebitsSelected}
+                          onCheckedChange={(checked) => toggleAllDebits(checked === true)}
+                          aria-label="Seleccionar todos los débitos"
+                        />
+                      </TableHead>
                       <TableHead>Servicio</TableHead>
                       <TableHead>Tarjeta</TableHead>
                       <TableHead>Categoria</TableHead>
@@ -899,41 +1074,58 @@ export function CreditCardManagement() {
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {recurringCardDebits.map((transaction) => (
-                      <TableRow key={transaction.id}>
-                        <TableCell className="font-medium">{transaction.description}</TableCell>
-                        <TableCell>{transaction.credit_card ? <CreditCardSelectLabel card={transaction.credit_card} /> : "-"}</TableCell>
-                        <TableCell>{transaction.category?.name || "-"}</TableCell>
-                        <TableCell>
-                          {formatDateOnlyForDisplay(transaction.transaction_date)}
-                        </TableCell>
-                        <TableCell className="text-right font-mono">
-                          {formatCurrency(Number(transaction.budgeted_amount || transaction.amount || 0), transaction.currency)}
-                        </TableCell>
-                        <TableCell>
-                          <Badge variant={transaction.status === "pending" ? "outline" : "secondary"}>
-                            {transaction.status === "pending" ? "Pendiente" : "Activo"}
-                          </Badge>
-                        </TableCell>
-                        <TableCell>
-                          <DropdownMenu>
-                            <DropdownMenuTrigger asChild>
-                              <Button variant="ghost" size="icon" aria-label="Más acciones de consumo">
-                                <MoreHorizontal className="h-4 w-4" />
-                              </Button>
-                            </DropdownMenuTrigger>
-                            <DropdownMenuContent align="end">
-                              <DropdownMenuItem asChild>
-                                <Link href={`/dashboard/transacciones/${transaction.id}`}>
-                                  <Pencil className="mr-2 h-4 w-4" />
-                                  Editar
-                                </Link>
-                              </DropdownMenuItem>
-                            </DropdownMenuContent>
-                          </DropdownMenu>
-                        </TableCell>
-                      </TableRow>
-                    ))}
+                    {recurringCardDebits.map((transaction) => {
+                      const selectionKey = getDebitSelectionKey(transaction)
+                      return (
+                        <TableRow key={transaction.id} data-state={selectedDebitKeys.has(selectionKey) ? "selected" : undefined}>
+                          <TableCell>
+                            <Checkbox
+                              checked={selectedDebitKeys.has(selectionKey)}
+                              onCheckedChange={(checked) => toggleDebit(transaction, checked === true)}
+                              aria-label={`Seleccionar ${transaction.description}`}
+                            />
+                          </TableCell>
+                          <TableCell className="font-medium">{transaction.description}</TableCell>
+                          <TableCell>{transaction.credit_card ? <CreditCardSelectLabel card={transaction.credit_card} /> : "-"}</TableCell>
+                          <TableCell>{transaction.category?.name || "-"}</TableCell>
+                          <TableCell>
+                            {formatDateOnlyForDisplay(transaction.transaction_date)}
+                          </TableCell>
+                          <TableCell className="text-right font-mono">
+                            {formatCurrency(Number(transaction.budgeted_amount || transaction.amount || 0), transaction.currency)}
+                          </TableCell>
+                          <TableCell>
+                            <Badge variant={transaction.status === "pending" ? "outline" : "secondary"}>
+                              {transaction.status === "pending" ? "Pendiente" : "Activo"}
+                            </Badge>
+                          </TableCell>
+                          <TableCell>
+                            <DropdownMenu>
+                              <DropdownMenuTrigger asChild>
+                                <Button variant="ghost" size="icon" aria-label="Más acciones de débito automático">
+                                  <MoreHorizontal className="h-4 w-4" />
+                                </Button>
+                              </DropdownMenuTrigger>
+                              <DropdownMenuContent align="end">
+                                <DropdownMenuItem asChild>
+                                  <Link href={`/dashboard/transacciones/${transaction.id}`}>
+                                    <Pencil className="mr-2 h-4 w-4" />
+                                    Editar
+                                  </Link>
+                                </DropdownMenuItem>
+                                <DropdownMenuItem
+                                  className="text-destructive"
+                                  onClick={() => openDebitDeleteDialog([transaction])}
+                                >
+                                  <Trash2 className="mr-2 h-4 w-4" />
+                                  Eliminar
+                                </DropdownMenuItem>
+                              </DropdownMenuContent>
+                            </DropdownMenu>
+                          </TableCell>
+                        </TableRow>
+                      )
+                    })}
                   </TableBody>
                 </Table>
               </div>
@@ -1094,6 +1286,100 @@ export function CreditCardManagement() {
             >
               {statementActionId && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
               Confirmar
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={debitDeleteOpen}
+        onOpenChange={(open) => {
+          if (!open) resetDebitDeleteState()
+        }}
+      >
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>
+              {debitDeleteTargets.length === 1
+                ? `Eliminar débito automático “${debitDeleteTargets[0]?.description}”`
+                : `Eliminar ${debitDeleteTargets.length} débitos automáticos`}
+            </DialogTitle>
+            <DialogDescription asChild>
+              <div className="space-y-3 text-sm text-muted-foreground">
+                <p>Elegí el alcance sobre pendientes y futuros desde {debitPeriodLabel}:</p>
+                <RadioGroup
+                  value={debitDeleteScope}
+                  onValueChange={(value) => {
+                    setDebitDeleteScope(value as "single" | "forward")
+                    setConfirmForwardDebitDelete(false)
+                  }}
+                  className="gap-3"
+                >
+                  <label className="flex items-start gap-3 rounded-md border p-3">
+                    <RadioGroupItem value="single" id="debit-delete-single" className="mt-0.5" />
+                    <span>
+                      <span className="font-medium text-foreground">Solo este período</span>
+                      <span className="mt-1 block">
+                        Archiva el/los movimiento(s) visibles ahora. La serie puede volver a materializarse en meses siguientes.
+                      </span>
+                    </span>
+                  </label>
+                  <label className="flex items-start gap-3 rounded-md border p-3">
+                    <RadioGroupItem value="forward" id="debit-delete-forward" className="mt-0.5" />
+                    <span>
+                      <span className="font-medium text-foreground">Cortar serie desde {debitPeriodLabel}</span>
+                      <span className="mt-1 block">
+                        Archiva pendientes/futuros desde {debitPeriodLabel} y evita nuevas materializaciones.
+                        Los movimientos ya aprobados se conservan.
+                      </span>
+                    </span>
+                  </label>
+                </RadioGroup>
+                {debitDeleteScope === "forward" && (
+                  <label className="flex items-start gap-3 rounded-md border border-destructive/30 bg-destructive/5 p-3 text-foreground">
+                    <Checkbox
+                      checked={confirmForwardDebitDelete}
+                      onCheckedChange={(checked) => setConfirmForwardDebitDelete(checked === true)}
+                      className="mt-0.5"
+                    />
+                    <span>
+                      Confirmo cortar {debitDeleteTargets.length === 1 ? "esta serie" : "estas series"} y archivar
+                      pendientes/futuros desde {debitPeriodLabel}.
+                    </span>
+                  </label>
+                )}
+                <div className="max-h-40 space-y-2 overflow-y-auto">
+                  {debitDeleteTargets.map((transaction) => (
+                    <div key={transaction.id} className="rounded-md border p-2 text-foreground">
+                      <div className="font-medium">{transaction.description}</div>
+                      <div className="text-xs text-muted-foreground">
+                        {transaction.credit_card ? <CreditCardSelectLabel card={transaction.credit_card} /> : "Sin tarjeta"}
+                        {" · "}
+                        {formatCurrency(Number(transaction.budgeted_amount || transaction.amount || 0), transaction.currency)}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                {debitError && (
+                  <div className="rounded-md border border-destructive/40 p-3 text-sm text-destructive">{debitError}</div>
+                )}
+              </div>
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={resetDebitDeleteState} disabled={isDeletingDebits}>
+              Cancelar
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={confirmDebitDelete}
+              disabled={
+                isDeletingDebits ||
+                (debitDeleteScope === "forward" && !confirmForwardDebitDelete)
+              }
+            >
+              {isDeletingDebits && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+              {debitDeleteScope === "forward" ? "Eliminar futuros" : "Eliminar solo este período"}
             </Button>
           </DialogFooter>
         </DialogContent>

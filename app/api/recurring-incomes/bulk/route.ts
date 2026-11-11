@@ -1,8 +1,10 @@
 import { NextRequest, NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
+import { toDateOnly } from "@/lib/date-only"
 import {
   planRecurringIncomeAmountUpdate,
   planRecurringIncomeDisable,
+  type IncomePendingOccurrence,
 } from "@/lib/recurring-income-bulk"
 import type { AmountChangeMode } from "@/lib/recurring-expense-series"
 
@@ -10,6 +12,16 @@ function parseTemplateIds(value: unknown) {
   if (!Array.isArray(value) || value.length === 0) return null
   const ids = value.map((item) => String(item || "").trim()).filter(Boolean)
   return ids.length > 0 ? Array.from(new Set(ids)) : null
+}
+
+function parseEffectivePeriod(body: Record<string, unknown>) {
+  const today = new Date()
+  const month = Number(body.month || today.getMonth() + 1)
+  const year = Number(body.year || today.getFullYear())
+  if (month < 1 || month > 12 || year < 2000 || year > 2100) {
+    throw new Error("Periodo inválido")
+  }
+  return toDateOnly(year, month, 1)
 }
 
 export async function POST(request: NextRequest) {
@@ -66,7 +78,6 @@ export async function POST(request: NextRequest) {
 
       // Keep already-materialized pending incomes aligned with the new template amount.
       if (plan.updates.length > 0) {
-        const archivedAtFilter = null
         for (const item of plan.updates) {
           const { error } = await supabase
             .from("transactions")
@@ -76,7 +87,7 @@ export async function POST(request: NextRequest) {
             })
             .eq("recurring_template_id", item.id)
             .eq("status", "pending")
-            .is("archived_at", archivedAtFilter)
+            .is("archived_at", null)
           if (error) throw error
         }
       }
@@ -85,9 +96,20 @@ export async function POST(request: NextRequest) {
     }
 
     if (action === "disable" || action === "delete") {
+      const effectivePeriod = parseEffectivePeriod(body)
+      const { data: pendingRows, error: pendingError } = await supabase
+        .from("transactions")
+        .select("id, recurring_template_id, recurrence_period, transaction_date, status, archived_at")
+        .in("recurring_template_id", templateIds)
+        .eq("status", "pending")
+        .is("archived_at", null)
+      if (pendingError) throw pendingError
+
       const plan = planRecurringIncomeDisable({
         templates: templates || [],
         templateIds,
+        pendingRows: (pendingRows || []) as IncomePendingOccurrence[],
+        effectivePeriod,
       })
 
       if (dryRun) {
@@ -96,18 +118,21 @@ export async function POST(request: NextRequest) {
           dryRun: true,
           preview: plan.preview,
           action,
+          effectivePeriod: plan.effectivePeriod,
+          archiveCount: plan.archiveIds.length,
         })
       }
 
       const archivedAt = new Date().toISOString()
-      if (plan.templateIds.length > 0) {
-        const { error: archiveError } = await supabase
+      let archived = 0
+      if (plan.archiveIds.length > 0) {
+        const { error: archiveError, count } = await supabase
           .from("transactions")
-          .update({ archived_at: archivedAt })
-          .in("recurring_template_id", plan.templateIds)
-          .eq("status", "pending")
+          .update({ archived_at: archivedAt }, { count: "exact" })
+          .in("id", plan.archiveIds)
           .is("archived_at", null)
         if (archiveError) throw archiveError
+        archived = count || plan.archiveIds.length
       }
 
       if (action === "disable") {
@@ -116,7 +141,13 @@ export async function POST(request: NextRequest) {
           .update({ is_active: false })
           .in("id", plan.templateIds)
         if (error) throw error
-        return NextResponse.json({ ok: true, disabled: plan.templateIds.length, preview: plan.preview })
+        return NextResponse.json({
+          ok: true,
+          disabled: plan.templateIds.length,
+          archived,
+          preview: plan.preview,
+          effectivePeriod: plan.effectivePeriod,
+        })
       }
 
       const { error } = await supabase
@@ -124,7 +155,13 @@ export async function POST(request: NextRequest) {
         .delete()
         .in("id", plan.templateIds)
       if (error) throw error
-      return NextResponse.json({ ok: true, deleted: plan.templateIds.length, preview: plan.preview })
+      return NextResponse.json({
+        ok: true,
+        deleted: plan.templateIds.length,
+        archived,
+        preview: plan.preview,
+        effectivePeriod: plan.effectivePeriod,
+      })
     }
 
     return NextResponse.json({ error: "Acción no soportada" }, { status: 400 })

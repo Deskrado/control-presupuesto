@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
 import { toDateOnly } from "@/lib/date-only"
 import {
+  getRecurringExpenseSeriesId,
   planRecurringExpenseAmountUpdate,
   planRecurringExpenseSeriesDisable,
   summarizeRecurringExpenseSeries,
@@ -48,10 +49,26 @@ async function loadRecurringExpenseRows(supabase: Awaited<ReturnType<typeof crea
   return rows
 }
 
-function parseSeriesIds(value: unknown) {
+function parseIds(value: unknown) {
   if (!Array.isArray(value) || value.length === 0) return null
   const ids = value.map((item) => String(item || "").trim()).filter(Boolean)
   return ids.length > 0 ? Array.from(new Set(ids)) : null
+}
+
+function resolveSeriesIds(
+  rows: RecurringExpenseOccurrence[],
+  seriesIds: string[] | null,
+  transactionIds: string[] | null,
+) {
+  const resolved = new Set(seriesIds || [])
+  if (transactionIds?.length) {
+    const wanted = new Set(transactionIds)
+    for (const row of rows) {
+      if (!wanted.has(row.id)) continue
+      resolved.add(getRecurringExpenseSeriesId(row))
+    }
+  }
+  return resolved.size > 0 ? Array.from(resolved) : null
 }
 
 function parseEffectivePeriod(body: Record<string, unknown>) {
@@ -91,13 +108,13 @@ export async function POST(request: NextRequest) {
 
     const body = await request.json().catch(() => ({})) as Record<string, unknown>
     const action = String(body.action || "")
-    const seriesIds = parseSeriesIds(body.seriesIds)
+    const effectivePeriod = parseEffectivePeriod(body)
+    const rows = await loadRecurringExpenseRows(supabase)
+    const seriesIds = resolveSeriesIds(rows, parseIds(body.seriesIds), parseIds(body.transactionIds))
     if (!seriesIds) {
       return NextResponse.json({ error: "Selecciona al menos un recurrente" }, { status: 400 })
     }
 
-    const effectivePeriod = parseEffectivePeriod(body)
-    const rows = await loadRecurringExpenseRows(supabase)
     const dryRun = Boolean(body.dryRun)
 
     if (action === "update-amount") {
