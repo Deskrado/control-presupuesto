@@ -15,8 +15,10 @@ import type { RecurringIncomeTemplate } from "@/lib/types"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { Checkbox } from "@/components/ui/checkbox"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group"
 import {
   Select,
   SelectContent,
@@ -34,7 +36,7 @@ import {
   TableRow,
 } from "@/components/ui/table"
 import { Textarea } from "@/components/ui/textarea"
-import { Loader2, Pencil, Play, Plus, Save, Trash2 } from "lucide-react"
+import { Loader2, Pencil, PencilLine, Play, Plus, Save, Trash2 } from "lucide-react"
 import { invalidateCache, invalidateCacheByPrefix } from "@/lib/swr-cache"
 import {
   AlertDialog,
@@ -46,6 +48,14 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
 
 type TemplateForm = {
   description: string
@@ -88,6 +98,21 @@ function templateToForm(template: RecurringIncomeTemplate): TemplateForm {
   }
 }
 
+type AmountMode = "absolute" | "percent"
+
+type AmountPreviewItem = {
+  templateId: string
+  description: string
+  fromAmount: number
+  toAmount: number
+}
+
+type DisablePreviewItem = {
+  templateId: string
+  description: string
+  wasActive: boolean
+}
+
 async function postJson(path: string, body?: Record<string, unknown>) {
   const response = await fetch(path, {
     method: "POST",
@@ -113,9 +138,19 @@ export function RecurringIncomeManagement() {
   const [message, setMessage] = useState<string | null>(null)
   const [deletingTemplate, setDeletingTemplate] = useState<RecurringIncomeTemplate | null>(null)
   const [isDeletingTemplate, setIsDeletingTemplate] = useState(false)
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+  const [amountMode, setAmountMode] = useState<AmountMode>("percent")
+  const [amountValue, setAmountValue] = useState("10")
+  const [amountOpen, setAmountOpen] = useState(false)
+  const [amountPreview, setAmountPreview] = useState<AmountPreviewItem[]>([])
+  const [pendingAmountChange, setPendingAmountChange] = useState<{ mode: AmountMode; value: number } | null>(null)
+  const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false)
+  const [bulkDeletePreview, setBulkDeletePreview] = useState<DisablePreviewItem[]>([])
+  const [isBulkSubmitting, setIsBulkSubmitting] = useState(false)
 
   const incomeCategories = categories?.filter((category) => category.type === "income") || []
   const defaultCurrencyId = settings?.default_currency_id || currencies?.find((currency) => currency.code === "ARS")?.id || currencies?.[0]?.id || ""
+  const allSelected = Boolean(templates?.length) && selectedIds.size === (templates?.length || 0)
 
   const handleCategoryChange = (value: string) => {
     const selectedCategory = incomeCategories.find((category) => category.id === value)
@@ -224,16 +259,122 @@ export function RecurringIncomeManagement() {
     if (!deletingTemplate) return
     setIsDeletingTemplate(true)
     try {
-      const supabase = createClient()
-      const { error } = await supabase.from("recurring_income_templates").delete().eq("id", deletingTemplate.id)
-      if (error) {
-        setMessage(error.message)
-        return
-      }
+      const result = await postJson("/api/recurring-incomes/bulk", {
+        action: "delete",
+        templateIds: [deletingTemplate.id],
+      })
+      void result
       invalidateCache("recurring-income-templates")
+      invalidateCacheByPrefix("transactions")
+      setSelectedIds((current) => {
+        const next = new Set(current)
+        next.delete(deletingTemplate.id)
+        return next
+      })
+    } catch (removeError) {
+      setMessage(removeError instanceof Error ? removeError.message : "Error al eliminar")
     } finally {
       setIsDeletingTemplate(false)
       setDeletingTemplate(null)
+    }
+  }
+
+  const toggleAll = (checked: boolean) => {
+    setSelectedIds(checked ? new Set((templates || []).map((template) => template.id)) : new Set())
+  }
+
+  const toggleOne = (templateId: string, checked: boolean) => {
+    setSelectedIds((current) => {
+      const next = new Set(current)
+      if (checked) next.add(templateId)
+      else next.delete(templateId)
+      return next
+    })
+  }
+
+  const openAmountDialog = async () => {
+    if (selectedIds.size === 0) return
+    setIsBulkSubmitting(true)
+    setMessage(null)
+    try {
+      const value = Number(amountValue)
+      if (!Number.isFinite(value)) throw new Error("Ingresá un valor numérico válido")
+      const payload = await postJson("/api/recurring-incomes/bulk", {
+        action: "update-amount",
+        dryRun: true,
+        templateIds: Array.from(selectedIds),
+        mode: amountMode,
+        value,
+      })
+      setPendingAmountChange({ mode: amountMode, value })
+      setAmountPreview(payload.preview || [])
+      setAmountOpen(true)
+    } catch (previewError) {
+      setMessage(previewError instanceof Error ? previewError.message : "No se pudo preparar la vista previa")
+    } finally {
+      setIsBulkSubmitting(false)
+    }
+  }
+
+  const confirmAmountUpdate = async () => {
+    if (!pendingAmountChange) return
+    setIsBulkSubmitting(true)
+    setMessage(null)
+    try {
+      const payload = await postJson("/api/recurring-incomes/bulk", {
+        action: "update-amount",
+        templateIds: Array.from(selectedIds),
+        mode: pendingAmountChange.mode,
+        value: pendingAmountChange.value,
+      })
+      setMessage(`Actualizadas ${payload.updated || 0} plantillas de ingreso recurrente.`)
+      setAmountOpen(false)
+      setPendingAmountChange(null)
+      invalidateCache("recurring-income-templates")
+      invalidateCacheByPrefix("transactions")
+    } catch (updateError) {
+      setMessage(updateError instanceof Error ? updateError.message : "Error al actualizar montos")
+    } finally {
+      setIsBulkSubmitting(false)
+    }
+  }
+
+  const openBulkDeleteDialog = async () => {
+    if (selectedIds.size === 0) return
+    setIsBulkSubmitting(true)
+    setMessage(null)
+    try {
+      const payload = await postJson("/api/recurring-incomes/bulk", {
+        action: "delete",
+        dryRun: true,
+        templateIds: Array.from(selectedIds),
+      })
+      setBulkDeletePreview(payload.preview || [])
+      setBulkDeleteOpen(true)
+    } catch (previewError) {
+      setMessage(previewError instanceof Error ? previewError.message : "No se pudo preparar la confirmación")
+    } finally {
+      setIsBulkSubmitting(false)
+    }
+  }
+
+  const confirmBulkDelete = async () => {
+    setIsBulkSubmitting(true)
+    setMessage(null)
+    try {
+      const payload = await postJson("/api/recurring-incomes/bulk", {
+        action: "delete",
+        templateIds: Array.from(selectedIds),
+      })
+      setMessage(`Eliminadas ${payload.deleted || 0} plantillas. Se archivaron sus pendientes.`)
+      setBulkDeleteOpen(false)
+      setSelectedIds(new Set())
+      invalidateCache("recurring-income-templates")
+      invalidateCacheByPrefix("transactions")
+    } catch (deleteError) {
+      setMessage(deleteError instanceof Error ? deleteError.message : "Error al eliminar plantillas")
+    } finally {
+      setIsBulkSubmitting(false)
     }
   }
 
@@ -360,12 +501,64 @@ export function RecurringIncomeManagement() {
 
         <Card>
           <CardHeader>
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-              <CardTitle>Plantillas</CardTitle>
-              <Button onClick={() => generatePending()} disabled={action === "generate-all"}>
-                {action === "generate-all" ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Play className="mr-2 h-4 w-4" />}
-                Generar pendientes
-              </Button>
+            <div className="flex flex-col gap-3">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <CardTitle>Plantillas</CardTitle>
+                <Button onClick={() => generatePending()} disabled={action === "generate-all"}>
+                  {action === "generate-all" ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Play className="mr-2 h-4 w-4" />}
+                  Generar pendientes
+                </Button>
+              </div>
+              <div className="flex flex-col gap-3 rounded-md border p-3 sm:flex-row sm:items-end sm:justify-between">
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
+                  <div className="space-y-2">
+                    <Label>Cambio masivo</Label>
+                    <RadioGroup
+                      value={amountMode}
+                      onValueChange={(value) => setAmountMode(value as AmountMode)}
+                      className="flex gap-4"
+                    >
+                      <label className="flex items-center gap-2 text-sm">
+                        <RadioGroupItem value="percent" id="income-mode-percent" />
+                        Porcentaje
+                      </label>
+                      <label className="flex items-center gap-2 text-sm">
+                        <RadioGroupItem value="absolute" id="income-mode-absolute" />
+                        Monto fijo
+                      </label>
+                    </RadioGroup>
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="income-amount-value">{amountMode === "percent" ? "% de cambio" : "Nuevo monto"}</Label>
+                    <Input
+                      id="income-amount-value"
+                      type="number"
+                      step="0.01"
+                      value={amountValue}
+                      onChange={(event) => setAmountValue(event.target.value)}
+                      className="w-36"
+                    />
+                  </div>
+                </div>
+                <div className="flex gap-2">
+                  <Button
+                    variant="outline"
+                    onClick={openAmountDialog}
+                    disabled={selectedIds.size === 0 || isBulkSubmitting}
+                  >
+                    {isBulkSubmitting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <PencilLine className="mr-2 h-4 w-4" />}
+                    Actualizar montos
+                  </Button>
+                  <Button
+                    variant="destructive"
+                    onClick={openBulkDeleteDialog}
+                    disabled={selectedIds.size === 0 || isBulkSubmitting}
+                  >
+                    <Trash2 className="mr-2 h-4 w-4" />
+                    Eliminar
+                  </Button>
+                </div>
+              </div>
             </div>
           </CardHeader>
           <CardContent>
@@ -380,6 +573,13 @@ export function RecurringIncomeManagement() {
                 <Table>
                   <TableHeader>
                     <TableRow>
+                      <TableHead className="w-10">
+                        <Checkbox
+                          checked={allSelected}
+                          onCheckedChange={(checked) => toggleAll(checked === true)}
+                          aria-label="Seleccionar todos"
+                        />
+                      </TableHead>
                       <TableHead>Descripción</TableHead>
                       <TableHead>Día</TableHead>
                       <TableHead>Vigencia</TableHead>
@@ -390,7 +590,14 @@ export function RecurringIncomeManagement() {
                   </TableHeader>
                   <TableBody>
                     {templates.map((template) => (
-                      <TableRow key={template.id}>
+                      <TableRow key={template.id} data-state={selectedIds.has(template.id) ? "selected" : undefined}>
+                        <TableCell>
+                          <Checkbox
+                            checked={selectedIds.has(template.id)}
+                            onCheckedChange={(checked) => toggleOne(template.id, checked === true)}
+                            aria-label={`Seleccionar ${template.description}`}
+                          />
+                        </TableCell>
                         <TableCell>
                           <div className="font-medium">{template.description}</div>
                           <div className="text-xs text-muted-foreground">{template.category?.name || "Sin categoria"}</div>
@@ -433,12 +640,54 @@ export function RecurringIncomeManagement() {
         </Card>
       </div>
 
+      <Dialog open={amountOpen} onOpenChange={setAmountOpen}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>Confirmar actualización de montos</DialogTitle>
+            <DialogDescription>
+              Se actualizarán las plantillas seleccionadas y los ingresos pendientes ya materializados vinculados a ellas.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="max-h-80 overflow-y-auto rounded-md border">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Plantilla</TableHead>
+                  <TableHead className="text-right">Antes</TableHead>
+                  <TableHead className="text-right">Después</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {amountPreview.map((item) => (
+                  <TableRow key={item.templateId}>
+                    <TableCell>{item.description}</TableCell>
+                    <TableCell className="text-right font-mono">
+                      {formatCurrency(item.fromAmount, settings?.default_currency || currencies?.[0])}
+                    </TableCell>
+                    <TableCell className="text-right font-mono">
+                      {formatCurrency(item.toAmount, settings?.default_currency || currencies?.[0])}
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setAmountOpen(false)} disabled={isBulkSubmitting}>Cancelar</Button>
+            <Button onClick={confirmAmountUpdate} disabled={isBulkSubmitting || amountPreview.length === 0}>
+              {isBulkSubmitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+              Confirmar actualización
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       <AlertDialog open={!!deletingTemplate} onOpenChange={() => setDeletingTemplate(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>Eliminar ingreso recurrente</AlertDialogTitle>
             <AlertDialogDescription>
-              ¿Eliminar "{deletingTemplate?.description}"? Esta acción no se puede deshacer.
+              ¿Eliminar "{deletingTemplate?.description}"? También se archivarán sus pendientes materializados.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -450,6 +699,36 @@ export function RecurringIncomeManagement() {
             >
               {isDeletingTemplate && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
               Eliminar
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog open={bulkDeleteOpen} onOpenChange={setBulkDeleteOpen}>
+        <AlertDialogContent className="max-w-xl">
+          <AlertDialogHeader>
+            <AlertDialogTitle>Eliminar ingresos recurrentes</AlertDialogTitle>
+            <AlertDialogDescription>
+              Se eliminarán las plantillas seleccionadas y se archivarán sus movimientos pendientes.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <div className="max-h-64 space-y-2 overflow-y-auto text-sm">
+            {bulkDeletePreview.map((item) => (
+              <div key={item.templateId} className="rounded-md border p-3">
+                <div className="font-medium">{item.description}</div>
+                <div className="text-muted-foreground">{item.wasActive ? "Activa" : "Pausada"}</div>
+              </div>
+            ))}
+          </div>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={isBulkSubmitting}>Cancelar</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={confirmBulkDelete}
+              disabled={isBulkSubmitting}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              {isBulkSubmitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+              Eliminar seleccionados
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
