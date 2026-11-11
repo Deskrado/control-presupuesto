@@ -13,7 +13,8 @@ import {
   Settings,
   ChevronLeft,
   ChevronRight,
-  Wallet
+  Wallet,
+  RefreshCw,
 } from 'lucide-react'
 import { useState } from 'react'
 import { Button } from '@/components/ui/button'
@@ -23,6 +24,7 @@ import { canSeeModule } from '@/lib/family-visibility'
 const navigation = [
   { module: 'dashboard', name: 'Dashboard', href: '/dashboard', icon: LayoutDashboard },
   { module: 'transactions', name: 'Transacciones', href: '/dashboard/transacciones', icon: ArrowUpDown },
+  { module: 'transactions', name: 'Recurrentes', href: '/dashboard/recurrentes', icon: RefreshCw },
   { module: 'credit_cards', name: 'Tarjetas', href: '/dashboard/tarjetas', icon: CreditCard },
   { module: 'categories', name: 'Categorías', href: '/dashboard/categorias', icon: FolderOpen },
   { module: 'investments', name: 'Inversiones', href: '/dashboard/inversiones', icon: TrendingUp },
@@ -63,12 +65,13 @@ export function Sidebar() {
 
         <nav className="flex-1 p-2 space-y-1">
           {visibleNavigation.map((item) => {
-            const isActive = pathname === item.href ||
-              (item.href !== '/dashboard' && pathname.startsWith(item.href))
+            const isActive = item.href === '/dashboard'
+              ? pathname === item.href
+              : pathname === item.href || pathname.startsWith(`${item.href}/`)
 
             return (
               <Link
-                key={item.name}
+                key={item.href}
                 href={item.href}
                 className={cn(
                   'flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors',
@@ -90,12 +93,13 @@ export function Sidebar() {
       <nav className="fixed inset-x-0 bottom-0 z-40 border-t border-border bg-card/95 px-2 pb-[calc(env(safe-area-inset-bottom)+0.5rem)] pt-2 shadow-lg backdrop-blur md:hidden">
         <div className="flex gap-1 overflow-x-auto overscroll-x-contain [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
           {visibleNavigation.map((item) => {
-            const isActive = pathname === item.href ||
-              (item.href !== '/dashboard' && pathname.startsWith(item.href))
+            const isActive = item.href === '/dashboard'
+              ? pathname === item.href
+              : pathname === item.href || pathname.startsWith(`${item.href}/`)
 
             return (
               <Link
-                key={item.name}
+                key={item.href}
                 href={item.href}
                 className={cn(
                   'flex min-w-[72px] flex-col items-center justify-center gap-1 rounded-md px-2 py-1.5 text-[11px] font-medium transition-colors',
