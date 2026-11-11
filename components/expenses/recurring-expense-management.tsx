@@ -37,6 +37,7 @@ type AmountMode = "absolute" | "percent"
 type AmountPreviewItem = {
   seriesId: string
   description: string
+  categoryId?: string | null
   fromAmount: number
   toAmount: number
   pendingUpdated: number

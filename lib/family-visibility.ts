@@ -1,4 +1,18 @@
+import { applyAmountChange, type AmountChangeMode } from "@/lib/recurring-expense-series"
 import type { Category, FamilyMember, FamilyMemberPermissions, Transaction } from "@/lib/types"
+
+type CategoryAmountItem = {
+  categoryId?: string | null
+}
+
+type RecurringExpenseSeriesVisibilityItem = CategoryAmountItem & {
+  currentAmount: number
+}
+
+type RecurringExpenseAmountPreviewVisibilityItem = CategoryAmountItem & {
+  fromAmount: number
+  toAmount: number
+}
 
 export const FAMILY_MODULES = [
   { id: "dashboard", label: "Dashboard" },
@@ -114,4 +128,67 @@ export function applyTransactionVisibility(
         },
       }
     })
+}
+
+/**
+ * Recurrentes list/summaries: RLS already drops hidden categories; masks are
+ * presentation-only and must be applied here (or in the API response) so real
+ * amounts never reach a restricted member's browser.
+ */
+export function applyRecurringExpenseSeriesVisibility<T extends RecurringExpenseSeriesVisibilityItem>(
+  series: T[] | undefined,
+  membership: FamilyMember | null | undefined,
+  permissions: FamilyMemberPermissions | null | undefined,
+): T[] {
+  if (!series) return []
+  if (!canApplyFamilyRestrictions(membership, permissions)) return series
+
+  const shouldFilterCategories = Array.isArray(permissions?.visible_category_ids)
+
+  return series
+    .filter((item) => {
+      if (!shouldFilterCategories) return true
+      if (!item.categoryId) return true
+      return isCategoryVisibleForMember({ id: item.categoryId, created_at: "" }, permissions)
+    })
+    .map((item) => {
+      const maskedAmount = getMaskedCategoryAmount(item.categoryId, permissions)
+      if (maskedAmount === null) return item
+      return { ...item, currentAmount: maskedAmount }
+    })
+}
+
+/**
+ * Bulk amount-update preview: substitute masked from/to so dry-run responses
+ * do not leak real series amounts. Display "to" follows the same change on the
+ * masked base; DB updates still use real amounts server-side.
+ */
+export function applyRecurringExpenseAmountPreviewVisibility<T extends RecurringExpenseAmountPreviewVisibilityItem>(
+  preview: T[] | undefined,
+  membership: FamilyMember | null | undefined,
+  permissions: FamilyMemberPermissions | null | undefined,
+  change?: { mode: AmountChangeMode; value: number } | null,
+): T[] {
+  if (!preview) return []
+  if (!canApplyFamilyRestrictions(membership, permissions)) return preview
+
+  return preview.map((item) => {
+    const maskedAmount = getMaskedCategoryAmount(item.categoryId, permissions)
+    if (maskedAmount === null) return item
+
+    let toAmount = maskedAmount
+    if (change) {
+      try {
+        toAmount = applyAmountChange(maskedAmount, change.mode, change.value)
+      } catch {
+        toAmount = maskedAmount
+      }
+    }
+
+    return {
+      ...item,
+      fromAmount: maskedAmount,
+      toAmount,
+    }
+  })
 }

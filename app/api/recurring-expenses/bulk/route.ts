@@ -2,6 +2,10 @@ import { NextRequest, NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
 import { toDateOnly } from "@/lib/date-only"
 import {
+  applyRecurringExpenseAmountPreviewVisibility,
+  applyRecurringExpenseSeriesVisibility,
+} from "@/lib/family-visibility"
+import {
   getRecurringExpenseSeriesId,
   planRecurringExpenseAmountUpdate,
   planRecurringExpenseSeriesDisable,
@@ -9,8 +13,43 @@ import {
   type AmountChangeMode,
   type RecurringExpenseOccurrence,
 } from "@/lib/recurring-expense-series"
+import type { FamilyMember, FamilyMemberPermissions } from "@/lib/types"
 
 const PAGE_SIZE = 1000
+
+async function loadFamilyVisibility(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  userId: string,
+) {
+  const { data: memberships, error: membershipsError } = await supabase
+    .from("family_members")
+    .select("*")
+    .eq("user_id", userId)
+    .eq("is_active", true)
+    .order("joined_at", { ascending: true })
+    .limit(1)
+
+  if (membershipsError) throw membershipsError
+
+  const membership = ((memberships || []) as FamilyMember[])[0] || null
+  if (!membership) return { membership: null, permissions: null as FamilyMemberPermissions | null }
+  if (membership.role === "owner" || membership.role === "admin") {
+    return { membership, permissions: null as FamilyMemberPermissions | null }
+  }
+
+  const { data: permissions, error: permissionsError } = await supabase
+    .from("family_member_permissions")
+    .select("*")
+    .eq("family_member_id", membership.id)
+    .maybeSingle()
+
+  if (permissionsError) throw permissionsError
+
+  return {
+    membership,
+    permissions: (permissions as FamilyMemberPermissions | null) || null,
+  }
+}
 
 async function loadRecurringExpenseRows(supabase: Awaited<ReturnType<typeof createClient>>) {
   const rows: RecurringExpenseOccurrence[] = []
@@ -87,10 +126,18 @@ export async function GET() {
     const { data: { user } } = await supabase.auth.getUser()
     if (!user) return NextResponse.json({ error: "No autenticado" }, { status: 401 })
 
-    const rows = await loadRecurringExpenseRows(supabase)
+    const [{ membership, permissions }, rows] = await Promise.all([
+      loadFamilyVisibility(supabase, user.id),
+      loadRecurringExpenseRows(supabase),
+    ])
+    const series = applyRecurringExpenseSeriesVisibility(
+      summarizeRecurringExpenseSeries(rows),
+      membership,
+      permissions,
+    )
     return NextResponse.json({
       ok: true,
-      series: summarizeRecurringExpenseSeries(rows),
+      series,
     })
   } catch (error) {
     return NextResponse.json(
@@ -109,7 +156,10 @@ export async function POST(request: NextRequest) {
     const body = await request.json().catch(() => ({})) as Record<string, unknown>
     const action = String(body.action || "")
     const effectivePeriod = parseEffectivePeriod(body)
-    const rows = await loadRecurringExpenseRows(supabase)
+    const [{ membership, permissions }, rows] = await Promise.all([
+      loadFamilyVisibility(supabase, user.id),
+      loadRecurringExpenseRows(supabase),
+    ])
     const seriesIds = resolveSeriesIds(rows, parseIds(body.seriesIds), parseIds(body.transactionIds))
     if (!seriesIds) {
       return NextResponse.json({ error: "Selecciona al menos un recurrente" }, { status: 400 })
@@ -134,9 +184,15 @@ export async function POST(request: NextRequest) {
         value,
         effectivePeriod,
       })
+      const preview = applyRecurringExpenseAmountPreviewVisibility(
+        plan.preview,
+        membership,
+        permissions,
+        { mode, value },
+      )
 
       if (dryRun) {
-        return NextResponse.json({ ok: true, dryRun: true, preview: plan.preview, updateCount: plan.updates.length })
+        return NextResponse.json({ ok: true, dryRun: true, preview, updateCount: plan.updates.length })
       }
 
       let updated = 0
@@ -149,7 +205,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({
         ok: true,
         updated,
-        preview: plan.preview,
+        preview,
       })
     }
 
