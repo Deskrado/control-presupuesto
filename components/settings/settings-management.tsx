@@ -1,6 +1,7 @@
 "use client"
 
 import { useEffect, useMemo, useState } from "react"
+import Link from "next/link"
 import { createClient } from "@/lib/supabase/client"
 import { useCategories, useCurrencies, useUserSettings } from "@/components/dashboard/use-dashboard-data"
 import { PortfolioIntegrations } from "@/components/investments/portfolio-integrations"
@@ -8,7 +9,7 @@ import type { FamilyMember, FamilyMemberPermissions, Profile } from "@/lib/types
 import { ALL_FAMILY_MODULE_IDS, FAMILY_MODULES, visibleCategoryIdsForEditor } from "@/lib/family-visibility"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import {
@@ -21,7 +22,7 @@ import {
 import { Switch } from "@/components/ui/switch"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Textarea } from "@/components/ui/textarea"
-import { Loader2, Pencil, Save, Trash2, X } from "lucide-react"
+import { Loader2, Pencil, RefreshCw, Save, Trash2, X } from "lucide-react"
 import { invalidateCache, invalidateCacheByPrefix } from "@/lib/swr-cache"
 import {
   AlertDialog,
@@ -712,6 +713,23 @@ export function SettingsManagement() {
 
         <TabsContent value="finance">
           <div className="grid gap-6 lg:grid-cols-2">
+            <Card className="lg:col-span-2">
+              <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <CardTitle>Gastos recurrentes</CardTitle>
+                  <CardDescription className="mt-1">
+                    Actualizá montos o eliminá series existentes (sin débitos de tarjeta; esos están en Tarjetas).
+                  </CardDescription>
+                </div>
+                <Button asChild variant="outline" className="w-full sm:w-auto">
+                  <Link href="/dashboard/recurrentes">
+                    <RefreshCw className="mr-2 h-4 w-4" />
+                    Administrar recurrentes
+                  </Link>
+                </Button>
+              </CardHeader>
+            </Card>
+
             <Card>
               <CardHeader>
                 <CardTitle>Base financiera</CardTitle>

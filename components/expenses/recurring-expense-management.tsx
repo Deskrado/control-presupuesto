@@ -1,6 +1,7 @@
 "use client"
 
 import { useEffect, useMemo, useState } from "react"
+import Link from "next/link"
 import { useDashboard } from "@/components/dashboard/dashboard-context"
 import { useCurrencies, useUserSettings } from "@/components/dashboard/use-dashboard-data"
 import { formatCurrency } from "@/lib/currency"
@@ -63,7 +64,14 @@ async function fetchJson(path: string, init?: RequestInit) {
   return payload
 }
 
-export function RecurringExpenseManagement() {
+export type RecurringExpenseManagementScope = "all" | "non_card"
+
+type RecurringExpenseManagementProps = {
+  /** `non_card` = gastos recurrentes (efectivo/débito/transfer). Débitos de tarjeta viven en Tarjetas. */
+  scope?: RecurringExpenseManagementScope
+}
+
+export function RecurringExpenseManagement({ scope = "non_card" }: RecurringExpenseManagementProps) {
   const { selectedMonth, selectedYear } = useDashboard()
   const { data: currencies } = useCurrencies()
   const { data: settings } = useUserSettings()
@@ -89,6 +97,7 @@ export function RecurringExpenseManagement() {
     () => disablePreview.reduce((sum, item) => sum + item.pendingArchived, 0),
     [disablePreview],
   )
+  const showTypeColumn = scope === "all"
 
   const defaultCurrency = settings?.default_currency || currencies?.find((currency) => currency.code === "ARS") || currencies?.[0]
   const currencyById = useMemo(() => {
@@ -101,7 +110,8 @@ export function RecurringExpenseManagement() {
     setError(null)
     try {
       const payload = await fetchJson("/api/recurring-expenses/bulk")
-      setSeries(payload.series || [])
+      const allSeries = (payload.series || []) as RecurringExpenseSeriesSummary[]
+      setSeries(scope === "non_card" ? allSeries.filter((item) => !item.isAutomaticDebit) : allSeries)
       setSelectedIds(new Set())
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : "Error al cargar recurrentes")
@@ -112,7 +122,7 @@ export function RecurringExpenseManagement() {
 
   useEffect(() => {
     loadSeries()
-  }, [])
+  }, [scope])
 
   const selectedSeries = useMemo(
     () => series.filter((item) => selectedIds.has(item.seriesId)),
@@ -284,11 +294,25 @@ export function RecurringExpenseManagement() {
         <CardHeader>
           <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
             <div>
-              <CardTitle>Gastos recurrentes y débitos automáticos</CardTitle>
+              <CardTitle>{scope === "non_card" ? "Gastos recurrentes" : "Gastos recurrentes y débitos automáticos"}</CardTitle>
               <p className="mt-1 text-sm text-muted-foreground">
-                Incluye débitos automáticos de tarjeta. Seleccioná series con los checkboxes y usá{" "}
-                <span className="font-medium text-foreground">Actualizar montos</span> o{" "}
-                <span className="font-medium text-foreground">Eliminar futuros</span>. El alcance usa el mes del dashboard ({periodLabel}).
+                {scope === "non_card" ? (
+                  <>
+                    Series de gasto recurrente (sin tarjeta). Los débitos automáticos de tarjeta se administran en{" "}
+                    <Link href="/dashboard/tarjetas" className="font-medium text-foreground underline-offset-4 hover:underline">
+                      Tarjetas
+                    </Link>
+                    . Seleccioná series y usá{" "}
+                    <span className="font-medium text-foreground">Actualizar montos</span> o{" "}
+                    <span className="font-medium text-foreground">Eliminar futuros</span>. Alcance desde {periodLabel}.
+                  </>
+                ) : (
+                  <>
+                    Incluye débitos automáticos de tarjeta. Seleccioná series con los checkboxes y usá{" "}
+                    <span className="font-medium text-foreground">Actualizar montos</span> o{" "}
+                    <span className="font-medium text-foreground">Eliminar futuros</span>. El alcance usa el mes del dashboard ({periodLabel}).
+                  </>
+                )}
               </p>
             </div>
             <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
@@ -361,7 +385,7 @@ export function RecurringExpenseManagement() {
                       />
                     </TableHead>
                     <TableHead>Descripción</TableHead>
-                    <TableHead>Tipo</TableHead>
+                    {showTypeColumn && <TableHead>Tipo</TableHead>}
                     <TableHead>Último período</TableHead>
                     <TableHead>Pendientes</TableHead>
                     <TableHead className="text-right">Monto actual</TableHead>
@@ -385,11 +409,13 @@ export function RecurringExpenseManagement() {
                           <div className="text-xs text-muted-foreground">Sin fecha de fin</div>
                         )}
                       </TableCell>
-                      <TableCell>
-                        <Badge variant="outline">
-                          {item.isAutomaticDebit ? "Débito automático" : "Recurrente"}
-                        </Badge>
-                      </TableCell>
+                      {showTypeColumn && (
+                        <TableCell>
+                          <Badge variant="outline">
+                            {item.isAutomaticDebit ? "Débito automático" : "Recurrente"}
+                          </Badge>
+                        </TableCell>
+                      )}
                       <TableCell>{item.latestPeriod.slice(0, 7)}</TableCell>
                       <TableCell>{item.pendingCount}</TableCell>
                       <TableCell className="text-right font-mono">
